@@ -1,6 +1,12 @@
 # Project 2 - BrainFlix API
 
 ## Overview
+- Storage is configured to use Seagate by default via `STORAGE_DIR`
+
+## Local Storage
+- Default: `/Volumes/Seagate/Coding Projects/nicholas-kerr-aetherstream-server/data/videos.json`
+- Override with `STORAGE_DIR` in `.env`, but it must still be under `/Volumes/Seagate/`
+
 - The url for the API is `https://project-2-api.herokuapp.com`
 - Every "video" object will contain unique details however the video link will be the same
 - The API comes seeded with a list of videos

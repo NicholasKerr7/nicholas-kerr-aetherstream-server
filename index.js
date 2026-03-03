@@ -1,14 +1,29 @@
 const express = require("express");
-const app = express();
 const cors = require("cors");
-const PORT = process.env.PORT || 8080;
 require("dotenv").config();
-const videos = require("./routes/videos");
+
+const videosRoutes = require("./routes/videos");
+const { ensureStorageReady, videosFilePath } = require("./utils/storage");
+
+const app = express();
+const PORT = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json());
-app.use("/videos", videos);
+app.use("/videos", videosRoutes);
 
-app.listen(PORT, () => {
-  console.log("Server has started on port " + PORT);
-});
+const startServer = async () => {
+  try {
+    await ensureStorageReady();
+
+    app.listen(PORT, () => {
+      console.log(`Server has started on port ${PORT}`);
+      console.log(`Using video storage: ${videosFilePath}`);
+    });
+  } catch (error) {
+    console.error("Failed to initialize storage:", error.message);
+    process.exit(1);
+  }
+};
+
+startServer();
