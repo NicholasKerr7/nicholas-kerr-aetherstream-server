@@ -205,6 +205,12 @@ router.delete("/:videoId/comments/:commentId", requireAuth, async (req, res) => 
       return res.status(404).json({ message: "No comment with that id exists" });
     }
 
+    const targetComment = selectedVideo.comments[commentIndex];
+
+    if (!targetComment?.userId || targetComment.userId !== req.user.id) {
+      return res.status(403).json({ message: "You can only delete your own comments." });
+    }
+
     const [deletedComment] = selectedVideo.comments.splice(commentIndex, 1);
     await writeVideos(videosData);
 
