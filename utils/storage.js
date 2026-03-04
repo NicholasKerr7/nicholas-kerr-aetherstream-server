@@ -7,10 +7,35 @@ const DEFAULT_STORAGE_DIR =
 
 const storageDir = path.resolve(process.env.STORAGE_DIR || DEFAULT_STORAGE_DIR);
 const videosFilePath = path.join(storageDir, "videos.json");
+const usersFilePath = path.join(storageDir, "users.json");
+const commentLikesFilePath = path.join(storageDir, "comment-likes.json");
 const seedVideosFilePath = path.resolve(__dirname, "..", "data", "videos.json");
+const seedUsersFilePath = path.resolve(__dirname, "..", "data", "users.json");
+const seedCommentLikesFilePath = path.resolve(
+  __dirname,
+  "..",
+  "data",
+  "comment-likes.json"
+);
 
 const isSeagatePath = (targetPath) =>
   targetPath === "/Volumes/Seagate" || targetPath.startsWith(SEAGATE_PREFIX);
+
+const ensureSeedFile = async (targetFilePath, seedFilePath, defaultContent) => {
+  try {
+    await fs.access(targetFilePath);
+    return;
+  } catch {
+    // Target file does not exist yet.
+  }
+
+  try {
+    const seedContent = await fs.readFile(seedFilePath, "utf8");
+    await fs.writeFile(targetFilePath, seedContent);
+  } catch {
+    await fs.writeFile(targetFilePath, defaultContent);
+  }
+};
 
 const ensureStorageReady = async () => {
   if (!isSeagatePath(storageDir)) {
@@ -21,27 +46,40 @@ const ensureStorageReady = async () => {
 
   await fs.mkdir(storageDir, { recursive: true });
 
-  try {
-    await fs.access(videosFilePath);
-  } catch {
-    const seedVideos = await fs.readFile(seedVideosFilePath, "utf8");
-    await fs.writeFile(videosFilePath, seedVideos);
-  }
+  await ensureSeedFile(videosFilePath, seedVideosFilePath, "[]");
+  await ensureSeedFile(usersFilePath, seedUsersFilePath, "[]");
+  await ensureSeedFile(commentLikesFilePath, seedCommentLikesFilePath, "[]");
 };
 
-const readVideos = async () => {
-  const fileContent = await fs.readFile(videosFilePath, "utf8");
+const readJson = async (filePath) => {
+  const fileContent = await fs.readFile(filePath, "utf8");
   return JSON.parse(fileContent);
 };
 
-const writeVideos = async (videos) => {
-  await fs.writeFile(videosFilePath, JSON.stringify(videos, null, 2));
+const writeJson = async (filePath, payload) => {
+  await fs.writeFile(filePath, JSON.stringify(payload, null, 2));
 };
+
+const readVideos = async () => readJson(videosFilePath);
+const writeVideos = async (videos) => writeJson(videosFilePath, videos);
+
+const readUsers = async () => readJson(usersFilePath);
+const writeUsers = async (users) => writeJson(usersFilePath, users);
+
+const readCommentLikes = async () => readJson(commentLikesFilePath);
+const writeCommentLikes = async (commentLikes) =>
+  writeJson(commentLikesFilePath, commentLikes);
 
 module.exports = {
   ensureStorageReady,
   readVideos,
   writeVideos,
+  readUsers,
+  writeUsers,
+  readCommentLikes,
+  writeCommentLikes,
   storageDir,
   videosFilePath,
+  usersFilePath,
+  commentLikesFilePath,
 };
