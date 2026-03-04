@@ -1,10 +1,46 @@
 const express = require("express");
 const crypto = require("crypto");
 
-const { readVideos, writeVideos } = require("../utils/storage");
+const { readVideos, writeVideos, readUsers } = require("../utils/storage");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
+
+const buildAvatarLookupByUserId = (users = []) =>
+  new Map(
+    users
+      .map((user) => [user.id, user.avatarUrl?.trim() || ""])
+      .filter((entry) => entry[1])
+  );
+
+const resolveCommentAvatarUrl = (comment, avatarLookupByUserId) => {
+  if (comment.userId && avatarLookupByUserId.has(comment.userId)) {
+    return avatarLookupByUserId.get(comment.userId);
+  }
+
+  const explicitAvatarUrl = comment.avatarUrl?.trim() || "";
+
+  if (explicitAvatarUrl) {
+    return explicitAvatarUrl;
+  }
+
+  return "";
+};
+
+const serializeComment = (comment, avatarLookupByUserId) => ({
+  ...comment,
+  avatarUrl: resolveCommentAvatarUrl(comment, avatarLookupByUserId),
+});
+
+const serializeVideoWithCommentAvatars = (video, avatarLookupByUserId) => ({
+  ...video,
+  comments: Array.isArray(video.comments)
+    ? video.comments.map((comment) =>
+        serializeComment(comment, avatarLookupByUserId)
+      )
+    : [],
+});
 
 router.get("/", async (req, res) => {
   try {
@@ -25,7 +61,8 @@ router.get("/", async (req, res) => {
 
 router.get("/:videoId", async (req, res) => {
   try {
-    const videosData = await readVideos();
+    const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
+    const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
 
     const singleVideo = videosData.find(
       (video) => video.id === req.params.videoId
@@ -35,13 +72,13 @@ router.get("/:videoId", async (req, res) => {
       return res.status(404).json({ message: "No video with that id exists" });
     }
 
-    res.json(singleVideo);
+    res.json(serializeVideoWithCommentAvatars(singleVideo, avatarLookupByUserId));
   } catch (error) {
     res.status(500).json({ message: "Failed to load video details." });
   }
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireAuth, async (req, res) => {
   try {
     const title = req.body.title?.trim();
     const description = req.body.description?.trim();
@@ -57,7 +94,7 @@ router.post("/", async (req, res) => {
     const newVideo = {
       id: crypto.randomUUID(),
       title,
-      channel: "Nick",
+      channel: req.user.name,
       image: DEFAULT_VIDEO_IMAGE,
       description,
       likes: "0",
@@ -77,10 +114,9 @@ router.post("/", async (req, res) => {
   }
 });
 
-router.post("/:videoId/comments", async (req, res) => {
+router.post("/:videoId/comments", requireAuth, async (req, res) => {
   try {
     const commentText = req.body.comment?.trim();
-    const authorName = req.body.name?.trim() || "You";
 
     if (!commentText) {
       return res
@@ -99,10 +135,12 @@ router.post("/:videoId/comments", async (req, res) => {
 
     const newComment = {
       id: crypto.randomUUID(),
-      name: authorName,
+      name: req.user.name,
+      avatarUrl: req.user.avatarUrl || "",
       comment: commentText,
       likes: 0,
       timestamp: Date.now(),
+      userId: req.user.id,
     };
 
     if (!Array.isArray(selectedVideo.comments)) {
@@ -118,9 +156,10 @@ router.post("/:videoId/comments", async (req, res) => {
   }
 });
 
-router.patch("/:videoId/comments/:commentId/like", async (req, res) => {
+router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res) => {
   try {
-    const videosData = await readVideos();
+    const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
+    const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
     const selectedVideo = videosData.find(
       (video) => video.id === req.params.videoId
     );
@@ -140,15 +179,16 @@ router.patch("/:videoId/comments/:commentId/like", async (req, res) => {
     selectedComment.likes = Number(selectedComment.likes || 0) + 1;
     await writeVideos(videosData);
 
-    res.json(selectedComment);
+    res.json(serializeComment(selectedComment, avatarLookupByUserId));
   } catch (error) {
     res.status(500).json({ message: "Failed to like comment." });
   }
 });
 
-router.delete("/:videoId/comments/:commentId", async (req, res) => {
+router.delete("/:videoId/comments/:commentId", requireAuth, async (req, res) => {
   try {
-    const videosData = await readVideos();
+    const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
+    const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
     const selectedVideo = videosData.find(
       (video) => video.id === req.params.videoId
     );
@@ -168,7 +208,7 @@ router.delete("/:videoId/comments/:commentId", async (req, res) => {
     const [deletedComment] = selectedVideo.comments.splice(commentIndex, 1);
     await writeVideos(videosData);
 
-    res.json(deletedComment);
+    res.json(serializeComment(deletedComment, avatarLookupByUserId));
   } catch (error) {
     res.status(500).json({ message: "Failed to delete comment." });
   }
