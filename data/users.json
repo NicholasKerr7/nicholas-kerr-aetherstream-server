@@ -1,0 +1,10 @@
+[
+  {
+    "id": "c65a6fa9-49e7-481a-8377-ff7d9db846ea",
+    "name": "QA Auth User",
+    "email": "qa_1772568418@example.com",
+    "passwordHash": "$2b$10$ovyFLOOzslCwjnp//9nIeOarB4EbS3TWE1exOmaEAE/uO0QkqmbUC",
+    "avatarUrl": "https://i.pravatar.cc/100?img=12",
+    "createdAt": 1772568419317
+  }
+]
