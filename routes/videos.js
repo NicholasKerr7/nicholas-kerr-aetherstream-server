@@ -1,6 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const multer = require("multer");
 
 const {
   readVideos,
@@ -10,9 +11,49 @@ const {
   writeCommentLikes,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
+const {
+  hasCloudinaryConfig,
+  uploadVideoFileToCloudinary,
+} = require("../utils/mediaStorage");
 
 const router = express.Router();
 const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
+const MAX_VIDEO_UPLOAD_BYTES =
+  Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 750 * 1024 * 1024;
+
+const uploadVideo = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_VIDEO_UPLOAD_BYTES,
+  },
+  fileFilter: (req, file, callback) => {
+    if (file?.mimetype?.startsWith("video/")) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error("Only video file uploads are allowed."));
+  },
+});
+
+const parseVideoUpload = (req, res, next) => {
+  uploadVideo.single("video")(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      const maxUploadMb = Math.round(MAX_VIDEO_UPLOAD_BYTES / (1024 * 1024));
+      res
+        .status(413)
+        .json({ message: `Video file is too large. Max size is ${maxUploadMb}MB.` });
+      return;
+    }
+
+    res.status(400).json({ message: error.message || "Invalid video upload payload." });
+  });
+};
 
 const buildAvatarLookupByUserId = (users = []) =>
   new Map(
@@ -145,7 +186,7 @@ router.get("/:videoId", async (req, res) => {
   }
 });
 
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
   try {
     const title = req.body.title?.trim();
     const description = req.body.description?.trim();
@@ -156,18 +197,30 @@ router.post("/", requireAuth, async (req, res) => {
         .json({ message: "Please provide both a title and description." });
     }
 
+    if (!req.file) {
+      return res.status(400).json({ message: "Please attach a video file to publish." });
+    }
+
+    if (!hasCloudinaryConfig()) {
+      return res.status(503).json({
+        message:
+          "Video upload pipeline is not configured. Add Cloudinary environment variables on the server.",
+      });
+    }
+
+    const uploadedVideo = await uploadVideoFileToCloudinary(req.file);
     const videosData = await readVideos();
 
     const newVideo = {
       id: crypto.randomUUID(),
       title,
       channel: req.user.name,
-      image: DEFAULT_VIDEO_IMAGE,
+      image: uploadedVideo.thumbnailUrl || DEFAULT_VIDEO_IMAGE,
       description,
       likes: "0",
       views: "0",
-      duration: "0:00",
-      video: "https://project-2-api.herokuapp.com/stream",
+      duration: uploadedVideo.duration || "0:00",
+      video: uploadedVideo.videoUrl,
       timestamp: Date.now(),
       comments: [],
     };
@@ -177,6 +230,7 @@ router.post("/", requireAuth, async (req, res) => {
 
     res.status(201).json(newVideo);
   } catch (error) {
+    console.error("Video upload failed:", error.message);
     res.status(500).json({ message: "Failed to publish video." });
   }
 });

@@ -4,7 +4,12 @@ require("dotenv").config();
 
 const videosRoutes = require("./routes/videos");
 const authRoutes = require("./routes/auth");
-const { ensureStorageReady, videosFilePath, usersFilePath } = require("./utils/storage");
+const {
+  ensureStorageReady,
+  videosFilePath,
+  usersFilePath,
+  commentLikesFilePath,
+} = require("./utils/storage");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -23,6 +28,7 @@ const startServer = async () => {
       console.log(`Server has started on port ${PORT}`);
       console.log(`Using video storage: ${videosFilePath}`);
       console.log(`Using user storage: ${usersFilePath}`);
+      console.log(`Using comment-like storage: ${commentLikesFilePath}`);
     });
   } catch (error) {
     console.error("Failed to initialize storage:", error.message);
