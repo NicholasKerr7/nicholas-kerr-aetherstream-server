@@ -18,8 +18,69 @@ const {
 
 const router = express.Router();
 const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
+const DEFAULT_VIDEO_CATEGORY = "General";
 const MAX_VIDEO_UPLOAD_BYTES =
   Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 750 * 1024 * 1024;
+const MAX_VIDEO_TAGS = 8;
+const DEFAULT_DISCOVERY_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "also",
+  "been",
+  "before",
+  "between",
+  "could",
+  "every",
+  "first",
+  "from",
+  "have",
+  "into",
+  "just",
+  "more",
+  "much",
+  "over",
+  "really",
+  "some",
+  "that",
+  "their",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "through",
+  "very",
+  "what",
+  "with",
+  "your",
+  "when",
+  "where",
+  "while",
+]);
+
+const CATEGORY_RULES = [
+  {
+    category: "Adventure",
+    keywords: ["travel", "trip", "journey", "vacation", "mountain", "ski", "explore"],
+  },
+  {
+    category: "Action Sports",
+    keywords: ["bmx", "bike", "skate", "rampage", "ride", "shred", "sport"],
+  },
+  {
+    category: "Wellness",
+    keywords: ["health", "medical", "wellness", "safety", "nutrition", "fitness"],
+  },
+  {
+    category: "Technology",
+    keywords: ["code", "software", "tech", "developer", "ai", "cloud"],
+  },
+  {
+    category: "Lifestyle",
+    keywords: ["home", "daily", "productivity", "routine", "style", "design"],
+  },
+];
 
 const uploadVideo = multer({
   storage: multer.memoryStorage(),
@@ -54,6 +115,115 @@ const parseVideoUpload = (req, res, next) => {
     res.status(400).json({ message: error.message || "Invalid video upload payload." });
   });
 };
+
+const normalizeTag = (tag = "") => {
+  const trimmed = String(tag || "").trim().toLowerCase();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  return trimmed.replace(/\s+/g, " ");
+};
+
+const normalizeTags = (tagsValue) => {
+  const rawTags = Array.isArray(tagsValue)
+    ? tagsValue
+    : typeof tagsValue === "string"
+      ? tagsValue.split(",")
+      : [];
+
+  const uniqueTags = [];
+
+  rawTags.forEach((tag) => {
+    const normalized = normalizeTag(tag);
+
+    if (!normalized || uniqueTags.includes(normalized)) {
+      return;
+    }
+
+    uniqueTags.push(normalized);
+  });
+
+  return uniqueTags.slice(0, MAX_VIDEO_TAGS);
+};
+
+const titleCase = (value = "") =>
+  value
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+
+const normalizeCategory = (categoryValue = "") => {
+  const cleaned = String(categoryValue || "").trim();
+
+  if (!cleaned) {
+    return "";
+  }
+
+  return titleCase(cleaned.replace(/\s+/g, " "));
+};
+
+const inferCategoryFromVideo = (video = {}) => {
+  const explicitCategory = normalizeCategory(video.category);
+
+  if (explicitCategory) {
+    return explicitCategory;
+  }
+
+  const text = `${video.title || ""} ${video.description || ""}`.toLowerCase();
+
+  const matchingRule = CATEGORY_RULES.find((rule) =>
+    rule.keywords.some((keyword) => text.includes(keyword))
+  );
+
+  return matchingRule?.category || DEFAULT_VIDEO_CATEGORY;
+};
+
+const buildAutoTagsFromVideo = (video = {}) => {
+  const sourceText = `${video.title || ""} ${video.description || ""}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ");
+
+  const tokens = sourceText.split(/\s+/).filter((token) => {
+    if (!token || token.length < 4) {
+      return false;
+    }
+
+    return !DEFAULT_DISCOVERY_STOP_WORDS.has(token);
+  });
+
+  const uniqueTokens = [];
+
+  tokens.forEach((token) => {
+    if (!uniqueTokens.includes(token)) {
+      uniqueTokens.push(token);
+    }
+  });
+
+  return uniqueTokens.slice(0, MAX_VIDEO_TAGS);
+};
+
+const resolveVideoTags = (video = {}) => {
+  const explicitTags = normalizeTags(video.tags);
+
+  if (explicitTags.length) {
+    return explicitTags;
+  }
+
+  return buildAutoTagsFromVideo(video);
+};
+
+const serializeVideoSummary = (video) => ({
+  id: video.id,
+  title: video.title,
+  channel: video.channel,
+  image: video.image,
+  description: video.description || "",
+  category: inferCategoryFromVideo(video),
+  tags: resolveVideoTags(video),
+});
 
 const buildAvatarLookupByUserId = (users = []) =>
   new Map(
@@ -133,12 +303,7 @@ router.get("/", async (req, res) => {
   try {
     const videosData = await readVideos();
 
-    const allVideos = videosData.map((video) => ({
-      id: video.id,
-      title: video.title,
-      channel: video.channel,
-      image: video.image,
-    }));
+    const allVideos = videosData.map((video) => serializeVideoSummary(video));
 
     res.json(allVideos);
   } catch (error) {
@@ -174,13 +339,16 @@ router.get("/:videoId", async (req, res) => {
       return res.status(404).json({ message: "No video with that id exists" });
     }
 
-    res.json(
-      serializeVideoWithCommentAvatars(
-        singleVideo,
-        avatarLookupByUserId,
-        likedCommentIds
-      )
+    const serializedVideo = serializeVideoWithCommentAvatars(
+      singleVideo,
+      avatarLookupByUserId,
+      likedCommentIds
     );
+
+    serializedVideo.category = inferCategoryFromVideo(singleVideo);
+    serializedVideo.tags = resolveVideoTags(singleVideo);
+
+    res.json(serializedVideo);
   } catch (error) {
     res.status(500).json({ message: "Failed to load video details." });
   }
@@ -190,6 +358,8 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
   try {
     const title = req.body.title?.trim();
     const description = req.body.description?.trim();
+    const category = normalizeCategory(req.body.category);
+    const tags = normalizeTags(req.body.tags);
 
     if (!title || !description) {
       return res
@@ -217,6 +387,8 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
       channel: req.user.name,
       image: uploadedVideo.thumbnailUrl || DEFAULT_VIDEO_IMAGE,
       description,
+      category: category || inferCategoryFromVideo({ title, description }),
+      tags: tags.length ? tags : buildAutoTagsFromVideo({ title, description }),
       likes: "0",
       views: "0",
       duration: uploadedVideo.duration || "0:00",
