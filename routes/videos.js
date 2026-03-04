@@ -9,6 +9,8 @@ const {
   readUsers,
   readCommentLikes,
   writeCommentLikes,
+  readWatchProgress,
+  writeWatchProgress,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
@@ -22,6 +24,10 @@ const DEFAULT_VIDEO_CATEGORY = "General";
 const MAX_VIDEO_UPLOAD_BYTES =
   Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 750 * 1024 * 1024;
 const MAX_VIDEO_TAGS = 8;
+const MAX_WATCH_HISTORY_ITEMS = 40;
+const MAX_CONTINUE_WATCHING_ITEMS = 12;
+const COMPLETE_PROGRESS_RATIO = 0.98;
+const MIN_CONTINUE_PROGRESS_SECONDS = 1;
 const DEFAULT_DISCOVERY_STOP_WORDS = new Set([
   "about",
   "after",
@@ -114,6 +120,83 @@ const parseVideoUpload = (req, res, next) => {
 
     res.status(400).json({ message: error.message || "Invalid video upload payload." });
   });
+};
+
+const toPositiveInteger = (value) => {
+  const parsedValue = Number(value);
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return 0;
+  }
+
+  return Math.round(parsedValue);
+};
+
+const parseDurationToSeconds = (durationValue) => {
+  if (typeof durationValue === "number") {
+    return toPositiveInteger(durationValue);
+  }
+
+  if (typeof durationValue !== "string") {
+    return 0;
+  }
+
+  const parts = durationValue
+    .split(":")
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part) && part >= 0);
+
+  if (parts.length === 2) {
+    return toPositiveInteger(parts[0] * 60 + parts[1]);
+  }
+
+  if (parts.length === 3) {
+    return toPositiveInteger(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  }
+
+  return 0;
+};
+
+const computeProgressPercent = (progressSeconds, durationSeconds, completed) => {
+  if (completed) {
+    return 100;
+  }
+
+  if (!durationSeconds) {
+    return 0;
+  }
+
+  return Math.min(
+    100,
+    Math.max(0, Math.round((progressSeconds / durationSeconds) * 100))
+  );
+};
+
+const normalizeWatchProgressPayload = (video, progressPayload = {}) => {
+  const rawProgressSeconds = Number(progressPayload.progressSeconds);
+  const rawDurationSeconds = Number(progressPayload.durationSeconds);
+  const durationFromVideo = parseDurationToSeconds(video?.duration);
+  const safeProgressSeconds = Number.isFinite(rawProgressSeconds)
+    ? rawProgressSeconds
+    : 0;
+
+  const durationSeconds = toPositiveInteger(rawDurationSeconds) || durationFromVideo;
+  const clampedProgressSeconds = Math.max(0, Math.round(safeProgressSeconds));
+  const boundedProgressSeconds = durationSeconds
+    ? Math.min(clampedProgressSeconds, durationSeconds)
+    : clampedProgressSeconds;
+  const isCompletedFromPayload = Boolean(progressPayload.completed);
+  const isCompletedFromProgress =
+    durationSeconds > 0 &&
+    boundedProgressSeconds >=
+      Math.max(1, Math.floor(durationSeconds * COMPLETE_PROGRESS_RATIO));
+  const completed = isCompletedFromPayload || isCompletedFromProgress;
+
+  return {
+    progressSeconds: completed ? 0 : boundedProgressSeconds,
+    durationSeconds,
+    completed,
+  };
 };
 
 const normalizeTag = (tag = "") => {
@@ -221,9 +304,61 @@ const serializeVideoSummary = (video) => ({
   channel: video.channel,
   image: video.image,
   description: video.description || "",
+  duration: video.duration || "0:00",
   category: inferCategoryFromVideo(video),
   tags: resolveVideoTags(video),
 });
+
+const serializeWatchHistoryEntry = (watchProgressEntry = {}, video) => {
+  if (!video) {
+    return null;
+  }
+
+  const normalizedEntry = normalizeWatchProgressPayload(video, {
+    progressSeconds: watchProgressEntry.progressSeconds,
+    durationSeconds: watchProgressEntry.durationSeconds,
+    completed: watchProgressEntry.completed,
+  });
+
+  return {
+    id: watchProgressEntry.id,
+    userId: watchProgressEntry.userId,
+    videoId: watchProgressEntry.videoId,
+    progressSeconds: normalizedEntry.progressSeconds,
+    durationSeconds: normalizedEntry.durationSeconds,
+    progressPercent: computeProgressPercent(
+      normalizedEntry.progressSeconds,
+      normalizedEntry.durationSeconds,
+      normalizedEntry.completed
+    ),
+    completed: normalizedEntry.completed,
+    updatedAt: Number(watchProgressEntry.updatedAt) || Date.now(),
+    video: serializeVideoSummary(video),
+  };
+};
+
+const buildWatchHistoryForUser = (watchProgressEntries, videosData, userId) => {
+  const videosById = new Map(videosData.map((video) => [video.id, video]));
+
+  const history = watchProgressEntries
+    .filter((entry) => entry.userId === userId)
+    .map((entry) => {
+      const targetVideo = videosById.get(entry.videoId);
+      return serializeWatchHistoryEntry(entry, targetVideo);
+    })
+    .filter(Boolean)
+    .sort((first, second) => second.updatedAt - first.updatedAt)
+    .slice(0, MAX_WATCH_HISTORY_ITEMS);
+
+  const continueWatching = history
+    .filter(
+      (entry) =>
+        !entry.completed && entry.progressSeconds >= MIN_CONTINUE_PROGRESS_SECONDS
+    )
+    .slice(0, MAX_CONTINUE_WATCHING_ITEMS);
+
+  return { history, continueWatching };
+};
 
 const buildAvatarLookupByUserId = (users = []) =>
   new Map(
@@ -311,12 +446,32 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.get("/history", requireAuth, async (req, res) => {
+  try {
+    const [videosData, watchProgressEntries] = await Promise.all([
+      readVideos(),
+      readWatchProgress(),
+    ]);
+    const watchHistory = buildWatchHistoryForUser(
+      watchProgressEntries,
+      videosData,
+      req.user.id
+    );
+
+    res.json(watchHistory);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load watch history." });
+  }
+});
+
 router.get("/:videoId", async (req, res) => {
   try {
-    const [videosData, usersData, commentLikesData] = await Promise.all([
+    const [videosData, usersData, commentLikesData, watchProgressEntries] =
+      await Promise.all([
       readVideos(),
       readUsers(),
       readCommentLikes(),
+      readWatchProgress(),
     ]);
     const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
     const requesterUserId = getOptionalAuthenticatedUserId(
@@ -344,13 +499,87 @@ router.get("/:videoId", async (req, res) => {
       avatarLookupByUserId,
       likedCommentIds
     );
+    const matchingWatchProgress = requesterUserId
+      ? watchProgressEntries.find(
+          (entry) =>
+            entry.userId === requesterUserId && entry.videoId === singleVideo.id
+        )
+      : null;
+    const serializedWatchProgress = matchingWatchProgress
+      ? serializeWatchHistoryEntry(matchingWatchProgress, singleVideo)
+      : null;
 
     serializedVideo.category = inferCategoryFromVideo(singleVideo);
     serializedVideo.tags = resolveVideoTags(singleVideo);
+    serializedVideo.watchProgressSeconds =
+      serializedWatchProgress?.progressSeconds || 0;
+    serializedVideo.watchDurationSeconds =
+      serializedWatchProgress?.durationSeconds ||
+      parseDurationToSeconds(singleVideo.duration);
+    serializedVideo.watchCompleted = Boolean(serializedWatchProgress?.completed);
+    serializedVideo.watchUpdatedAt = serializedWatchProgress?.updatedAt || 0;
 
     res.json(serializedVideo);
   } catch (error) {
     res.status(500).json({ message: "Failed to load video details." });
+  }
+});
+
+router.put("/:videoId/progress", requireAuth, async (req, res) => {
+  try {
+    const rawProgressSeconds = Number(req.body.progressSeconds);
+
+    if (!Number.isFinite(rawProgressSeconds) || rawProgressSeconds < 0) {
+      return res.status(400).json({
+        message: "Please provide a valid non-negative progressSeconds value.",
+      });
+    }
+
+    const [videosData, watchProgressEntries] = await Promise.all([
+      readVideos(),
+      readWatchProgress(),
+    ]);
+    const selectedVideo = videosData.find((video) => video.id === req.params.videoId);
+
+    if (!selectedVideo) {
+      return res.status(404).json({ message: "No video with that id exists" });
+    }
+
+    const normalizedWatchProgress = normalizeWatchProgressPayload(selectedVideo, {
+      progressSeconds: rawProgressSeconds,
+      durationSeconds: req.body.durationSeconds,
+      completed: req.body.completed,
+    });
+    const existingWatchProgressIndex = watchProgressEntries.findIndex(
+      (entry) =>
+        entry.userId === req.user.id && entry.videoId === req.params.videoId
+    );
+    const existingWatchProgress =
+      existingWatchProgressIndex >= 0
+        ? watchProgressEntries[existingWatchProgressIndex]
+        : null;
+    const nextWatchProgressEntry = {
+      id: existingWatchProgress?.id || crypto.randomUUID(),
+      userId: req.user.id,
+      videoId: req.params.videoId,
+      progressSeconds: normalizedWatchProgress.progressSeconds,
+      durationSeconds: normalizedWatchProgress.durationSeconds,
+      completed: normalizedWatchProgress.completed,
+      createdAt: existingWatchProgress?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    if (existingWatchProgressIndex >= 0) {
+      watchProgressEntries[existingWatchProgressIndex] = nextWatchProgressEntry;
+    } else {
+      watchProgressEntries.push(nextWatchProgressEntry);
+    }
+
+    await writeWatchProgress(watchProgressEntries);
+
+    res.json(serializeWatchHistoryEntry(nextWatchProgressEntry, selectedVideo));
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update watch progress." });
   }
 });
 

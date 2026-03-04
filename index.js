@@ -9,6 +9,7 @@ const {
   videosFilePath,
   usersFilePath,
   commentLikesFilePath,
+  watchProgressFilePath,
 } = require("./utils/storage");
 
 const app = express();
@@ -29,6 +30,7 @@ const startServer = async () => {
       console.log(`Using video storage: ${videosFilePath}`);
       console.log(`Using user storage: ${usersFilePath}`);
       console.log(`Using comment-like storage: ${commentLikesFilePath}`);
+      console.log(`Using watch-progress storage: ${watchProgressFilePath}`);
     });
   } catch (error) {
     console.error("Failed to initialize storage:", error.message);
