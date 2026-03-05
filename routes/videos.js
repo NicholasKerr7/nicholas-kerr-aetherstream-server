@@ -20,7 +20,7 @@ const {
   hasCloudinaryConfig,
   uploadVideoFileToCloudinary,
 } = require("../utils/mediaStorage");
-const { resolveVideoCreator } = require("../utils/creators");
+const { parseMetric, resolveVideoCreator } = require("../utils/creators");
 const {
   resolveUserNotificationPreferences,
   isNotificationEnabledForType,
@@ -32,6 +32,10 @@ const DEFAULT_VIDEO_CATEGORY = "General";
 const MAX_VIDEO_UPLOAD_BYTES =
   Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 750 * 1024 * 1024;
 const MAX_VIDEO_TAGS = 8;
+const MAX_FEED_ITEMS = 80;
+const DEFAULT_FEED_ITEMS = 36;
+const DEFAULT_FEED_MODE = "for-you";
+const FEED_MODES = new Set(["for-you", "following", "trending"]);
 const MAX_WATCH_HISTORY_ITEMS = 40;
 const MAX_CONTINUE_WATCHING_ITEMS = 12;
 const COMPLETE_PROGRESS_RATIO = 0.98;
@@ -383,6 +387,316 @@ const buildFollowedCreatorIdSetForUser = (creatorFollowsData = [], userId = "") 
       .filter(Boolean)
   );
 
+const parseFeedMode = (modeValue = "") => {
+  const normalizedMode = String(modeValue || "")
+    .trim()
+    .toLowerCase();
+
+  if (!normalizedMode || !FEED_MODES.has(normalizedMode)) {
+    return DEFAULT_FEED_MODE;
+  }
+
+  return normalizedMode;
+};
+
+const parseFeedLimit = (limitValue) => {
+  const parsedLimit = Number(limitValue);
+
+  if (!Number.isFinite(parsedLimit)) {
+    return DEFAULT_FEED_ITEMS;
+  }
+
+  return Math.min(MAX_FEED_ITEMS, Math.max(1, Math.round(parsedLimit)));
+};
+
+const resolveTimestamp = (timestampValue = 0) => {
+  const parsedTimestamp = Number(timestampValue);
+
+  if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
+    return 0;
+  }
+
+  return parsedTimestamp;
+};
+
+const resolveAgeDaysFromTimestamp = (timestampValue = 0) => {
+  const resolvedTimestamp = resolveTimestamp(timestampValue);
+
+  if (!resolvedTimestamp) {
+    return 365;
+  }
+
+  return Math.max(0, (Date.now() - resolvedTimestamp) / (1000 * 60 * 60 * 24));
+};
+
+const countStoredComments = (comments = []) => {
+  if (!Array.isArray(comments)) {
+    return 0;
+  }
+
+  const visitedCommentIds = new Set();
+
+  const countCommentWithReplies = (comment = {}) => {
+    if (!comment || typeof comment !== "object") {
+      return 0;
+    }
+
+    const commentId = typeof comment.id === "string" ? comment.id.trim() : "";
+
+    if (commentId) {
+      if (visitedCommentIds.has(commentId)) {
+        return 0;
+      }
+
+      visitedCommentIds.add(commentId);
+    }
+
+    const replies = Array.isArray(comment.replies) ? comment.replies : [];
+
+    return (
+      1 +
+      replies.reduce(
+        (replyCount, replyComment) =>
+          replyCount + countCommentWithReplies(replyComment),
+        0
+      )
+    );
+  };
+
+  return comments.reduce(
+    (commentCount, comment) => commentCount + countCommentWithReplies(comment),
+    0
+  );
+};
+
+const scoreTrendingVideo = (video = {}) => {
+  const views = parseMetric(video.views);
+  const likes = parseMetric(video.likes);
+  const comments = countStoredComments(video.comments);
+  const ageDays = resolveAgeDaysFromTimestamp(video.timestamp);
+  const freshnessBoost = Math.max(0, 30 - ageDays) / 30;
+  const momentumBoost = Math.max(0, 10 - ageDays) / 10;
+
+  return (
+    Math.log10(views + 1) * 4.2 +
+    Math.log10(likes + 1) * 5.1 +
+    Math.log10(comments + 1) * 3.6 +
+    freshnessBoost * 3.2 +
+    momentumBoost * 1.6
+  );
+};
+
+const addWeightToMap = (weightMap = new Map(), key = "", weight = 0) => {
+  if (!key || !Number.isFinite(weight) || weight <= 0) {
+    return;
+  }
+
+  weightMap.set(key, (weightMap.get(key) || 0) + weight);
+};
+
+const buildDefaultPersonalizationProfile = () => ({
+  tagWeights: new Map(),
+  categoryWeights: new Map(),
+  creatorWeights: new Map(),
+  watchedVideoStateById: new Map(),
+  followedCreatorIds: new Set(),
+  hasSignals: false,
+});
+
+const buildPersonalizationProfile = ({
+  userId = "",
+  videosData = [],
+  watchProgressEntries = [],
+  creatorFollowsData = [],
+} = {}) => {
+  if (!userId) {
+    return buildDefaultPersonalizationProfile();
+  }
+
+  const videosById = new Map(videosData.map((video) => [video.id, video]));
+  const watchedVideoStateById = new Map();
+  const tagWeights = new Map();
+  const categoryWeights = new Map();
+  const creatorWeights = new Map();
+  const followedCreatorIds = buildFollowedCreatorIdSetForUser(
+    creatorFollowsData,
+    userId
+  );
+  const userWatchEntries = watchProgressEntries.filter(
+    (watchProgressEntry) => watchProgressEntry.userId === userId
+  );
+
+  userWatchEntries.forEach((watchProgressEntry) => {
+    const watchedVideo = videosById.get(watchProgressEntry.videoId);
+
+    if (!watchedVideo) {
+      return;
+    }
+
+    const normalizedWatchState = normalizeWatchProgressPayload(watchedVideo, {
+      progressSeconds: watchProgressEntry.progressSeconds,
+      durationSeconds: watchProgressEntry.durationSeconds,
+      completed: watchProgressEntry.completed,
+    });
+    const completedBoost = normalizedWatchState.completed ? 1.35 : 1;
+    const completionRatio = normalizedWatchState.completed
+      ? 1
+      : normalizedWatchState.durationSeconds
+        ? normalizedWatchState.progressSeconds / normalizedWatchState.durationSeconds
+        : 0;
+    const engagementWeight = Math.max(0.2, completionRatio) * completedBoost;
+    const recencyDays = resolveAgeDaysFromTimestamp(watchProgressEntry.updatedAt);
+    const recencyWeight = 0.6 + Math.max(0, 21 - recencyDays) / 21;
+    const weightedSignal = engagementWeight * recencyWeight;
+    const category = inferCategoryFromVideo(watchedVideo);
+    const creator = resolveVideoCreator(watchedVideo);
+    const tags = resolveVideoTags(watchedVideo);
+    const normalizedTagWeight = weightedSignal / Math.max(1, tags.length);
+
+    watchedVideoStateById.set(watchedVideo.id, normalizedWatchState);
+
+    addWeightToMap(categoryWeights, category, weightedSignal);
+    addWeightToMap(creatorWeights, creator.creatorId, weightedSignal * 1.2);
+
+    tags.forEach((tag) => {
+      addWeightToMap(tagWeights, tag, normalizedTagWeight);
+    });
+  });
+
+  followedCreatorIds.forEach((creatorId) => {
+    addWeightToMap(creatorWeights, creatorId, 2.5);
+  });
+
+  return {
+    tagWeights,
+    categoryWeights,
+    creatorWeights,
+    watchedVideoStateById,
+    followedCreatorIds,
+    hasSignals:
+      tagWeights.size > 0 ||
+      categoryWeights.size > 0 ||
+      creatorWeights.size > 0 ||
+      followedCreatorIds.size > 0,
+  };
+};
+
+const scoreForYouVideo = (feedCandidate = {}, personalizationProfile = {}) => {
+  const summary = feedCandidate.summary || {};
+  const trendingScore = Number(feedCandidate.trendingScore) || 0;
+  const tags = Array.isArray(summary.tags) ? summary.tags : [];
+  const category = summary.category || DEFAULT_VIDEO_CATEGORY;
+  const creatorId = summary.creatorId || "";
+  const tagAffinityTotal = tags.reduce(
+    (totalAffinity, tag) =>
+      totalAffinity + (personalizationProfile.tagWeights.get(tag) || 0),
+    0
+  );
+  const tagAffinity = tags.length
+    ? tagAffinityTotal / Math.min(3, tags.length)
+    : 0;
+  const categoryAffinity =
+    personalizationProfile.categoryWeights.get(category) || 0;
+  const creatorAffinity =
+    personalizationProfile.creatorWeights.get(creatorId) || 0;
+  const isFollowedCreator =
+    personalizationProfile.followedCreatorIds.has(creatorId);
+  const watchedState = personalizationProfile.watchedVideoStateById.get(summary.id);
+  let watchedAdjustment = 0;
+
+  if (watchedState?.completed) {
+    watchedAdjustment = -4;
+  } else if ((watchedState?.progressSeconds || 0) > 0) {
+    watchedAdjustment = 1.6;
+  }
+
+  return (
+    trendingScore +
+    tagAffinity * 2.4 +
+    categoryAffinity * 1.5 +
+    creatorAffinity * 1.6 +
+    (isFollowedCreator ? 3.5 : 0) +
+    watchedAdjustment
+  );
+};
+
+const scoreFollowingVideo = (feedCandidate = {}, personalizationProfile = {}) => {
+  const summary = feedCandidate.summary || {};
+  const tags = Array.isArray(summary.tags) ? summary.tags : [];
+  const tagAffinity = tags.reduce(
+    (totalAffinity, tag) =>
+      totalAffinity + (personalizationProfile.tagWeights.get(tag) || 0),
+    0
+  );
+  const creatorAffinity =
+    personalizationProfile.creatorWeights.get(summary.creatorId) || 0;
+  const recencyBoost = Math.max(0, 20 - feedCandidate.ageDays) / 20;
+
+  return (
+    feedCandidate.trendingScore +
+    recencyBoost * 3.2 +
+    tagAffinity * 1.4 +
+    creatorAffinity * 0.8
+  );
+};
+
+const rankFeedVideos = ({
+  mode = DEFAULT_FEED_MODE,
+  videosData = [],
+  personalizationProfile = buildDefaultPersonalizationProfile(),
+}) => {
+  const feedCandidates = videosData.map((video) => {
+    const summary = serializeVideoSummary(video);
+
+    return {
+      summary,
+      trendingScore: scoreTrendingVideo(video),
+      ageDays: resolveAgeDaysFromTimestamp(video.timestamp),
+    };
+  });
+
+  const scopedFeedCandidates =
+    mode === "following"
+      ? feedCandidates.filter((candidate) =>
+          personalizationProfile.followedCreatorIds.has(candidate.summary.creatorId)
+        )
+      : feedCandidates;
+
+  return scopedFeedCandidates
+    .map((candidate) => {
+      if (mode === "following") {
+        return {
+          ...candidate,
+          score: scoreFollowingVideo(candidate, personalizationProfile),
+        };
+      }
+
+      if (mode === "for-you") {
+        return {
+          ...candidate,
+          score: scoreForYouVideo(candidate, personalizationProfile),
+        };
+      }
+
+      return {
+        ...candidate,
+        score: candidate.trendingScore,
+      };
+    })
+    .sort((firstCandidate, secondCandidate) => {
+      if (secondCandidate.score !== firstCandidate.score) {
+        return secondCandidate.score - firstCandidate.score;
+      }
+
+      if (secondCandidate.summary.timestamp !== firstCandidate.summary.timestamp) {
+        return secondCandidate.summary.timestamp - firstCandidate.summary.timestamp;
+      }
+
+      return firstCandidate.summary.title.localeCompare(secondCandidate.summary.title);
+    })
+    .map((candidate) => candidate.summary);
+};
+
 const truncateNotificationCommentPreview = (commentText = "", maxLength = 90) => {
   const normalizedCommentText = String(commentText || "")
     .replace(/\s+/g, " ")
@@ -699,6 +1013,52 @@ router.get("/following", requireAuth, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: "Failed to load following feed." });
+  }
+});
+
+router.get("/feed", async (req, res) => {
+  try {
+    const [videosData, usersData, watchProgressEntries, creatorFollowsData] =
+      await Promise.all([
+        readVideos(),
+        readUsers(),
+        readWatchProgress(),
+        readCreatorFollows(),
+      ]);
+    const requestedMode = parseFeedMode(req.query.mode);
+    const feedLimit = parseFeedLimit(req.query.limit);
+    const requesterUserId = getOptionalAuthenticatedUserId(
+      req.headers.authorization || "",
+      usersData
+    );
+    const personalizationProfile = requesterUserId
+      ? buildPersonalizationProfile({
+          userId: requesterUserId,
+          videosData,
+          watchProgressEntries,
+          creatorFollowsData,
+        })
+      : buildDefaultPersonalizationProfile();
+    const effectiveMode =
+      requestedMode === "for-you" && !requesterUserId ? "trending" : requestedMode;
+    const rankedFeedVideos = rankFeedVideos({
+      mode: effectiveMode,
+      videosData,
+      personalizationProfile,
+    }).slice(0, feedLimit);
+
+    res.json({
+      mode: effectiveMode,
+      requestedMode,
+      videos: rankedFeedVideos,
+      personalization: {
+        isAuthenticated: Boolean(requesterUserId),
+        hasSignals: personalizationProfile.hasSignals,
+        followedCreatorCount: personalizationProfile.followedCreatorIds.size,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load personalized feed." });
   }
 });
 
