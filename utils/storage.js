@@ -11,6 +11,7 @@ const usersFilePath = path.join(storageDir, "users.json");
 const commentLikesFilePath = path.join(storageDir, "comment-likes.json");
 const watchProgressFilePath = path.join(storageDir, "watch-progress.json");
 const creatorFollowsFilePath = path.join(storageDir, "creator-follows.json");
+const notificationsFilePath = path.join(storageDir, "notifications.json");
 const seedVideosFilePath = path.resolve(__dirname, "..", "data", "videos.json");
 const seedUsersFilePath = path.resolve(__dirname, "..", "data", "users.json");
 const seedCommentLikesFilePath = path.resolve(
@@ -30,6 +31,12 @@ const seedCreatorFollowsFilePath = path.resolve(
   "..",
   "data",
   "creator-follows.json"
+);
+const seedNotificationsFilePath = path.resolve(
+  __dirname,
+  "..",
+  "data",
+  "notifications.json"
 );
 
 const isSeagatePath = (targetPath) =>
@@ -65,6 +72,7 @@ const ensureStorageReady = async () => {
   await ensureSeedFile(commentLikesFilePath, seedCommentLikesFilePath, "[]");
   await ensureSeedFile(watchProgressFilePath, seedWatchProgressFilePath, "[]");
   await ensureSeedFile(creatorFollowsFilePath, seedCreatorFollowsFilePath, "[]");
+  await ensureSeedFile(notificationsFilePath, seedNotificationsFilePath, "[]");
 };
 
 const readJson = async (filePath) => {
@@ -91,6 +99,9 @@ const writeWatchProgress = async (watchProgressEntries) =>
 const readCreatorFollows = async () => readJson(creatorFollowsFilePath);
 const writeCreatorFollows = async (creatorFollows) =>
   writeJson(creatorFollowsFilePath, creatorFollows);
+const readNotifications = async () => readJson(notificationsFilePath);
+const writeNotifications = async (notifications) =>
+  writeJson(notificationsFilePath, notifications);
 
 module.exports = {
   ensureStorageReady,
@@ -104,10 +115,13 @@ module.exports = {
   writeWatchProgress,
   readCreatorFollows,
   writeCreatorFollows,
+  readNotifications,
+  writeNotifications,
   storageDir,
   videosFilePath,
   usersFilePath,
   commentLikesFilePath,
   watchProgressFilePath,
   creatorFollowsFilePath,
+  notificationsFilePath,
 };

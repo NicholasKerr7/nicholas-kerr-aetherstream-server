@@ -12,6 +12,8 @@ const {
   readWatchProgress,
   writeWatchProgress,
   readCreatorFollows,
+  readNotifications,
+  writeNotifications,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
@@ -376,6 +378,92 @@ const buildFollowedCreatorIdSetForUser = (creatorFollowsData = [], userId = "") 
       .map((creatorFollow) => creatorFollow.creatorId)
       .filter(Boolean)
   );
+
+const truncateNotificationCommentPreview = (commentText = "", maxLength = 90) => {
+  const normalizedCommentText = String(commentText || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalizedCommentText) {
+    return "";
+  }
+
+  if (normalizedCommentText.length <= maxLength) {
+    return normalizedCommentText;
+  }
+
+  return `${normalizedCommentText.slice(0, Math.max(0, maxLength - 1))}...`;
+};
+
+const resolveRecipientUserIdForVideo = (video = {}, usersData = []) => {
+  const videoCreator = resolveVideoCreator(video);
+
+  if (!videoCreator.creatorId) {
+    return "";
+  }
+
+  const hasMatchingUser = usersData.some((user) => user.id === videoCreator.creatorId);
+
+  return hasMatchingUser ? videoCreator.creatorId : "";
+};
+
+const buildVideoInteractionNotificationMessage = ({
+  type = "video_comment",
+  actorName = "Someone",
+  videoTitle = "",
+  commentPreview = "",
+}) => {
+  const safeVideoTitle = String(videoTitle || "your video");
+
+  if (type === "video_comment_like") {
+    return `${actorName} liked a comment on your video "${safeVideoTitle}".`;
+  }
+
+  if (commentPreview) {
+    return `${actorName} commented on your video "${safeVideoTitle}": "${commentPreview}"`;
+  }
+
+  return `${actorName} commented on your video "${safeVideoTitle}".`;
+};
+
+const appendVideoInteractionNotification = (
+  notificationsData = [],
+  { recipientUserId = "", actorUser = null, type = "video_comment", video = null, commentId = "", commentText = "" } = {}
+) => {
+  const safeNotifications = Array.isArray(notificationsData) ? notificationsData : [];
+  const actorUserId = actorUser?.id || "";
+  const actorName = actorUser?.name?.trim() || "Someone";
+
+  if (!recipientUserId || !actorUserId || recipientUserId === actorUserId || !video?.id) {
+    return safeNotifications;
+  }
+
+  const commentPreview = truncateNotificationCommentPreview(commentText);
+
+  return [
+    ...safeNotifications,
+    {
+      id: crypto.randomUUID(),
+      userId: recipientUserId,
+      type,
+      actorUserId,
+      actorName,
+      actorAvatarUrl: actorUser?.avatarUrl?.trim() || "",
+      videoId: video.id,
+      videoTitle: video.title || "",
+      commentId,
+      commentPreview,
+      message: buildVideoInteractionNotificationMessage({
+        type,
+        actorName,
+        videoTitle: video.title || "",
+        commentPreview: type === "video_comment" ? commentPreview : "",
+      }),
+      createdAt: Date.now(),
+      readAt: 0,
+    },
+  ];
+};
 
 const buildAvatarLookupByUserId = (users = []) =>
   new Map(
@@ -799,7 +887,11 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
         .json({ message: "Please provide a comment before posting." });
     }
 
-    const videosData = await readVideos();
+    const [videosData, usersData, notificationsData] = await Promise.all([
+      readVideos(),
+      readUsers(),
+      readNotifications(),
+    ]);
     const selectedVideo = videosData.find(
       (video) => video.id === req.params.videoId
     );
@@ -832,7 +924,31 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
     } else {
       selectedVideo.comments.unshift(newComment);
     }
-    await writeVideos(videosData);
+
+    const notificationRecipientUserId = resolveRecipientUserIdForVideo(
+      selectedVideo,
+      usersData
+    );
+    const nextNotifications = appendVideoInteractionNotification(
+      notificationsData,
+      {
+        recipientUserId: notificationRecipientUserId,
+        actorUser: req.user,
+        type: "video_comment",
+        video: selectedVideo,
+        commentId: newComment.id,
+        commentText: newComment.comment,
+      }
+    );
+    const shouldWriteNotifications =
+      nextNotifications.length !== notificationsData.length;
+    const pendingWrites = [writeVideos(videosData)];
+
+    if (shouldWriteNotifications) {
+      pendingWrites.push(writeNotifications(nextNotifications));
+    }
+
+    await Promise.all(pendingWrites);
 
     const likedCommentIds = new Set();
     const serializedComment = serializeComment(
@@ -853,10 +969,12 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
 
 router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res) => {
   try {
-    const [videosData, usersData, commentLikesData] = await Promise.all([
+    const [videosData, usersData, commentLikesData, notificationsData] =
+      await Promise.all([
       readVideos(),
       readUsers(),
       readCommentLikes(),
+      readNotifications(),
     ]);
     const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
     const selectedVideo = videosData.find(
@@ -901,8 +1019,30 @@ router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res)
     const likeDelta = isLiking ? 1 : -1;
     selectedComment.likes = Math.max(0, Number(selectedComment.likes || 0) + likeDelta);
     const likedCommentIds = isLiking ? new Set([req.params.commentId]) : new Set();
+    const notificationRecipientUserId = resolveRecipientUserIdForVideo(
+      selectedVideo,
+      usersData
+    );
+    const nextNotifications =
+      isLiking && notificationRecipientUserId
+        ? appendVideoInteractionNotification(notificationsData, {
+            recipientUserId: notificationRecipientUserId,
+            actorUser: req.user,
+            type: "video_comment_like",
+            video: selectedVideo,
+            commentId: selectedComment.id,
+            commentText: selectedComment.comment,
+          })
+        : notificationsData;
+    const shouldWriteNotifications =
+      nextNotifications.length !== notificationsData.length;
+    const pendingWrites = [writeVideos(videosData), writeCommentLikes(commentLikesData)];
 
-    await Promise.all([writeVideos(videosData), writeCommentLikes(commentLikesData)]);
+    if (shouldWriteNotifications) {
+      pendingWrites.push(writeNotifications(nextNotifications));
+    }
+
+    await Promise.all(pendingWrites);
 
     const serializedComment = serializeComment(
       selectedComment,

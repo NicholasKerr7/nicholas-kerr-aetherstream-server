@@ -5,6 +5,7 @@ require("dotenv").config();
 const videosRoutes = require("./routes/videos");
 const authRoutes = require("./routes/auth");
 const creatorsRoutes = require("./routes/creators");
+const notificationsRoutes = require("./routes/notifications");
 const {
   ensureStorageReady,
   videosFilePath,
@@ -12,6 +13,7 @@ const {
   commentLikesFilePath,
   watchProgressFilePath,
   creatorFollowsFilePath,
+  notificationsFilePath,
 } = require("./utils/storage");
 
 const app = express();
@@ -23,6 +25,7 @@ app.use(express.json());
 app.use("/auth", authRoutes);
 app.use("/videos", videosRoutes);
 app.use("/creators", creatorsRoutes);
+app.use("/notifications", notificationsRoutes);
 
 const startServer = async () => {
   try {
@@ -35,6 +38,7 @@ const startServer = async () => {
       console.log(`Using comment-like storage: ${commentLikesFilePath}`);
       console.log(`Using watch-progress storage: ${watchProgressFilePath}`);
       console.log(`Using creator-follow storage: ${creatorFollowsFilePath}`);
+      console.log(`Using notifications storage: ${notificationsFilePath}`);
     });
   } catch (error) {
     console.error("Failed to initialize storage:", error.message);
