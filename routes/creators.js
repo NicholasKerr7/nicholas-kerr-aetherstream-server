@@ -7,6 +7,8 @@ const {
   readUsers,
   readCreatorFollows,
   writeCreatorFollows,
+  readWatchProgress,
+  readCommentLikes,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
@@ -17,6 +19,10 @@ const {
 
 const router = express.Router();
 const MAX_CREATOR_VIDEOS = 100;
+const DEFAULT_ANALYTICS_WINDOW_DAYS = 30;
+const MIN_ANALYTICS_WINDOW_DAYS = 1;
+const MAX_ANALYTICS_WINDOW_DAYS = 365;
+const HOURS_PER_SECOND = 1 / 3600;
 
 const getOptionalAuthenticatedUserId = (authorizationHeader = "", usersData = []) => {
   if (!authorizationHeader.startsWith("Bearer ")) {
@@ -51,6 +57,341 @@ const normalizeVideoTags = (video = {}) => {
   }
 
   return [];
+};
+
+const toPositiveInteger = (value) => {
+  const parsedValue = Number(value);
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return 0;
+  }
+
+  return Math.round(parsedValue);
+};
+
+const parseDurationToSeconds = (durationValue) => {
+  if (typeof durationValue === "number") {
+    return toPositiveInteger(durationValue);
+  }
+
+  if (typeof durationValue !== "string") {
+    return 0;
+  }
+
+  const parts = durationValue
+    .split(":")
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part) && part >= 0);
+
+  if (parts.length === 2) {
+    return toPositiveInteger(parts[0] * 60 + parts[1]);
+  }
+
+  if (parts.length === 3) {
+    return toPositiveInteger(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  }
+
+  return 0;
+};
+
+const clampRatio = (value = 0) => Math.min(1, Math.max(0, Number(value) || 0));
+
+const parseAnalyticsWindowDays = (windowDaysValue) => {
+  const parsedWindowDays = Number(windowDaysValue);
+
+  if (!Number.isFinite(parsedWindowDays)) {
+    return DEFAULT_ANALYTICS_WINDOW_DAYS;
+  }
+
+  return Math.min(
+    MAX_ANALYTICS_WINDOW_DAYS,
+    Math.max(MIN_ANALYTICS_WINDOW_DAYS, Math.round(parsedWindowDays))
+  );
+};
+
+const flattenStoredComments = (comments = []) => {
+  if (!Array.isArray(comments)) {
+    return [];
+  }
+
+  const flattenedComments = [];
+  const visitedCommentIds = new Set();
+
+  const visitComment = (comment = {}) => {
+    if (!comment || typeof comment !== "object") {
+      return;
+    }
+
+    const commentId = normalizeWhitespace(comment.id || "");
+
+    if (commentId) {
+      if (visitedCommentIds.has(commentId)) {
+        return;
+      }
+
+      visitedCommentIds.add(commentId);
+    }
+
+    flattenedComments.push(comment);
+
+    const replies = Array.isArray(comment.replies) ? comment.replies : [];
+    replies.forEach((reply) => visitComment(reply));
+  };
+
+  comments.forEach((comment) => visitComment(comment));
+
+  return flattenedComments;
+};
+
+const resolveWatchEntryDurationSeconds = (watchProgressEntry = {}) =>
+  toPositiveInteger(watchProgressEntry.durationSeconds);
+
+const resolveWatchEntryWatchedSeconds = (watchProgressEntry = {}) => {
+  const durationSeconds = resolveWatchEntryDurationSeconds(watchProgressEntry);
+  const progressSeconds = Math.max(
+    0,
+    Math.round(Number(watchProgressEntry.progressSeconds) || 0)
+  );
+
+  if (watchProgressEntry.completed) {
+    return durationSeconds || progressSeconds;
+  }
+
+  if (durationSeconds) {
+    return Math.min(durationSeconds, progressSeconds);
+  }
+
+  return progressSeconds;
+};
+
+const resolveWatchEntryCompletionRatio = (watchProgressEntry = {}) => {
+  if (watchProgressEntry.completed) {
+    return 1;
+  }
+
+  const durationSeconds = resolveWatchEntryDurationSeconds(watchProgressEntry);
+
+  if (!durationSeconds) {
+    return 0;
+  }
+
+  const progressSeconds = Math.max(
+    0,
+    Math.round(Number(watchProgressEntry.progressSeconds) || 0)
+  );
+
+  return clampRatio(progressSeconds / durationSeconds);
+};
+
+const roundHours = (totalSeconds = 0) =>
+  Math.round(Math.max(0, Number(totalSeconds) || 0) * HOURS_PER_SECOND * 10) / 10;
+
+const buildCreatorAnalytics = ({
+  creatorId = "",
+  creatorName = "",
+  creatorAvatarUrl = "",
+  videosData = [],
+  watchProgressEntries = [],
+  commentLikesData = [],
+  creatorFollowsData = [],
+  windowDays = DEFAULT_ANALYTICS_WINDOW_DAYS,
+}) => {
+  const analyticsWindowDays = parseAnalyticsWindowDays(windowDays);
+  const windowStartAt = Date.now() - analyticsWindowDays * 24 * 60 * 60 * 1000;
+  const creatorVideos = videosData.filter((video) => {
+    const creator = resolveVideoCreator(video);
+    return creator.creatorId === creatorId;
+  });
+  const creatorVideoIds = new Set(creatorVideos.map((video) => video.id));
+  const watchEntriesForCreator = watchProgressEntries.filter((watchProgressEntry) =>
+    creatorVideoIds.has(watchProgressEntry.videoId)
+  );
+  const commentLikesForCreator = commentLikesData.filter((commentLike) =>
+    creatorVideoIds.has(commentLike.videoId)
+  );
+  const followers = creatorFollowsData.filter(
+    (creatorFollow) => creatorFollow.creatorId === creatorId
+  );
+  const followersCount = followers.length;
+  const newFollowersInWindow = followers.filter(
+    (creatorFollow) => Number(creatorFollow.createdAt) >= windowStartAt
+  ).length;
+  const watchEntriesByVideoId = new Map();
+  const commentLikesByVideoId = new Map();
+
+  watchEntriesForCreator.forEach((watchProgressEntry) => {
+    if (!watchEntriesByVideoId.has(watchProgressEntry.videoId)) {
+      watchEntriesByVideoId.set(watchProgressEntry.videoId, []);
+    }
+
+    watchEntriesByVideoId.get(watchProgressEntry.videoId).push(watchProgressEntry);
+  });
+
+  commentLikesForCreator.forEach((commentLike) => {
+    if (!commentLikesByVideoId.has(commentLike.videoId)) {
+      commentLikesByVideoId.set(commentLike.videoId, []);
+    }
+
+    commentLikesByVideoId.get(commentLike.videoId).push(commentLike);
+  });
+
+  let totalViews = 0;
+  let totalLikes = 0;
+  let totalComments = 0;
+  let totalCommentLikes = 0;
+  let totalWatchSessions = 0;
+  let totalCompletedViews = 0;
+  let totalWatchSeconds = 0;
+  let totalCompletionRatio = 0;
+  let completionRatioCount = 0;
+  let uploadedVideosInWindow = 0;
+  let commentsInWindow = 0;
+  let commentLikesInWindow = 0;
+  let watchSessionsInWindow = 0;
+  let watchSecondsInWindow = 0;
+  const uniqueViewerUserIds = new Set();
+
+  const perVideoAnalytics = creatorVideos.map((video) => {
+    const videoViews = parseMetric(video.views);
+    const videoLikes = parseMetric(video.likes);
+    const videoComments = flattenStoredComments(video.comments);
+    const videoCommentsCount = videoComments.length;
+    const videoCommentLikes = commentLikesByVideoId.get(video.id) || [];
+    const videoWatchEntries = watchEntriesByVideoId.get(video.id) || [];
+    const videoUniqueViewers = new Set(
+      videoWatchEntries.map((watchProgressEntry) => watchProgressEntry.userId).filter(Boolean)
+    );
+    let videoWatchSeconds = 0;
+    let videoCompletedViews = 0;
+    let videoCompletionRatio = 0;
+    let videoCompletionRatioCount = 0;
+
+    videoWatchEntries.forEach((watchProgressEntry) => {
+      const watchedSeconds = resolveWatchEntryWatchedSeconds(watchProgressEntry);
+      const completionRatio = resolveWatchEntryCompletionRatio(watchProgressEntry);
+      const updatedAt = Number(watchProgressEntry.updatedAt) || 0;
+
+      videoWatchSeconds += watchedSeconds;
+
+      if (watchProgressEntry.completed) {
+        videoCompletedViews += 1;
+      }
+
+      if (resolveWatchEntryDurationSeconds(watchProgressEntry) || watchProgressEntry.completed) {
+        videoCompletionRatio += completionRatio;
+        videoCompletionRatioCount += 1;
+      }
+
+      if (updatedAt >= windowStartAt) {
+        watchSessionsInWindow += 1;
+        watchSecondsInWindow += watchedSeconds;
+      }
+    });
+
+    videoUniqueViewers.forEach((viewerUserId) => uniqueViewerUserIds.add(viewerUserId));
+
+    const videoCommentsInWindow = videoComments.filter(
+      (comment) => Number(comment.timestamp) >= windowStartAt
+    ).length;
+    const videoCommentLikesInWindow = videoCommentLikes.filter(
+      (commentLike) => Number(commentLike.createdAt) >= windowStartAt
+    ).length;
+    const publishedAt = Number(video.timestamp) || 0;
+
+    if (publishedAt >= windowStartAt) {
+      uploadedVideosInWindow += 1;
+    }
+
+    commentsInWindow += videoCommentsInWindow;
+    commentLikesInWindow += videoCommentLikesInWindow;
+    totalViews += videoViews;
+    totalLikes += videoLikes;
+    totalComments += videoCommentsCount;
+    totalCommentLikes += videoCommentLikes.length;
+    totalWatchSessions += videoWatchEntries.length;
+    totalCompletedViews += videoCompletedViews;
+    totalWatchSeconds += videoWatchSeconds;
+    totalCompletionRatio += videoCompletionRatio;
+    completionRatioCount += videoCompletionRatioCount;
+
+    return {
+      id: video.id,
+      title: video.title || "Untitled video",
+      image: video.image || "",
+      publishedAt,
+      durationSeconds: parseDurationToSeconds(video.duration),
+      duration: video.duration || "0:00",
+      views: videoViews,
+      likes: videoLikes,
+      comments: videoCommentsCount,
+      commentLikes: videoCommentLikes.length,
+      watchSessions: videoWatchEntries.length,
+      uniqueViewers: videoUniqueViewers.size,
+      completedViews: videoCompletedViews,
+      watchHours: roundHours(videoWatchSeconds),
+      averageWatchTimeSeconds: videoWatchEntries.length
+        ? Math.round(videoWatchSeconds / videoWatchEntries.length)
+        : 0,
+      completionRatePercent: videoCompletionRatioCount
+        ? Math.round((videoCompletionRatio / videoCompletionRatioCount) * 100)
+        : 0,
+      engagementScore: videoLikes + videoCommentsCount + videoCommentLikes.length,
+      windowComments: videoCommentsInWindow,
+      windowCommentLikes: videoCommentLikesInWindow,
+    };
+  });
+
+  const topVideos = [...perVideoAnalytics]
+    .sort((firstVideo, secondVideo) => {
+      if (secondVideo.engagementScore !== firstVideo.engagementScore) {
+        return secondVideo.engagementScore - firstVideo.engagementScore;
+      }
+
+      if (secondVideo.views !== firstVideo.views) {
+        return secondVideo.views - firstVideo.views;
+      }
+
+      return secondVideo.publishedAt - firstVideo.publishedAt;
+    })
+    .slice(0, 8);
+
+  return {
+    creator: {
+      id: creatorId,
+      name: creatorName || "Creator",
+      avatarUrl: creatorAvatarUrl || "",
+    },
+    overview: {
+      totalVideos: creatorVideos.length,
+      totalViews,
+      totalLikes,
+      totalComments,
+      totalCommentLikes,
+      totalFollowers: followersCount,
+      totalWatchSessions,
+      totalCompletedViews,
+      uniqueViewers: uniqueViewerUserIds.size,
+      watchHours: roundHours(totalWatchSeconds),
+      averageCompletionRatePercent: completionRatioCount
+        ? Math.round((totalCompletionRatio / completionRatioCount) * 100)
+        : 0,
+      averageWatchTimeSeconds: totalWatchSessions
+        ? Math.round(totalWatchSeconds / totalWatchSessions)
+        : 0,
+    },
+    window: {
+      days: analyticsWindowDays,
+      startsAt: windowStartAt,
+      uploadedVideos: uploadedVideosInWindow,
+      comments: commentsInWindow,
+      commentLikes: commentLikesInWindow,
+      newFollowers: newFollowersInWindow,
+      watchSessions: watchSessionsInWindow,
+      watchHours: roundHours(watchSecondsInWindow),
+    },
+    topVideos,
+    videos: perVideoAnalytics,
+  };
 };
 
 const serializeCreatorVideo = (video) => {
@@ -198,6 +539,34 @@ router.get("/", async (req, res) => {
     res.json(creators);
   } catch (error) {
     res.status(500).json({ message: "Failed to load creators." });
+  }
+});
+
+router.get("/me/analytics", requireAuth, async (req, res) => {
+  try {
+    const [videosData, usersData, creatorFollowsData, watchProgressEntries, commentLikes] =
+      await Promise.all([
+        readVideos(),
+        readUsers(),
+        readCreatorFollows(),
+        readWatchProgress(),
+        readCommentLikes(),
+      ]);
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+    const analyticsPayload = buildCreatorAnalytics({
+      creatorId: req.user.id,
+      creatorName: currentUser?.name || req.user.name,
+      creatorAvatarUrl: currentUser?.avatarUrl || req.user.avatarUrl || "",
+      videosData,
+      watchProgressEntries,
+      commentLikesData: commentLikes,
+      creatorFollowsData,
+      windowDays: req.query.windowDays,
+    });
+
+    res.json(analyticsPayload);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load creator analytics." });
   }
 });
 
