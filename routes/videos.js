@@ -594,13 +594,20 @@ router.get("/following", requireAuth, async (req, res) => {
 
 router.get("/:videoId", async (req, res) => {
   try {
-    const [videosData, usersData, commentLikesData, watchProgressEntries] =
+    const [
+      videosData,
+      usersData,
+      commentLikesData,
+      watchProgressEntries,
+      creatorFollowsData,
+    ] =
       await Promise.all([
-      readVideos(),
-      readUsers(),
-      readCommentLikes(),
-      readWatchProgress(),
-    ]);
+        readVideos(),
+        readUsers(),
+        readCommentLikes(),
+        readWatchProgress(),
+        readCreatorFollows(),
+      ]);
     const avatarLookupByUserId = buildAvatarLookupByUserId(usersData);
     const requesterUserId = getOptionalAuthenticatedUserId(
       req.headers.authorization || "",
@@ -641,6 +648,17 @@ router.get("/:videoId", async (req, res) => {
     serializedVideo.channel = creator.creatorName;
     serializedVideo.creatorId = creator.creatorId;
     serializedVideo.creatorAvatarUrl = creator.creatorAvatarUrl;
+    const creatorFollowerUserIds = new Set(
+      creatorFollowsData
+        .filter((creatorFollow) => creatorFollow.creatorId === creator.creatorId)
+        .map((creatorFollow) => creatorFollow.userId)
+        .filter(Boolean)
+    );
+
+    serializedVideo.creatorFollowersCount = creatorFollowerUserIds.size;
+    serializedVideo.isCreatorFollowedByCurrentUser = requesterUserId
+      ? creatorFollowerUserIds.has(requesterUserId)
+      : false;
     serializedVideo.category = inferCategoryFromVideo(singleVideo);
     serializedVideo.tags = resolveVideoTags(singleVideo);
     serializedVideo.watchProgressSeconds =

@@ -249,6 +249,12 @@ router.put("/:creatorId/follow", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "No creator with that id exists" });
     }
 
+    if (creatorProfile.id === req.user.id) {
+      return res
+        .status(400)
+        .json({ message: "You cannot follow your own creator profile." });
+    }
+
     const existingFollowIndex = creatorFollowsData.findIndex(
       (creatorFollow) =>
         creatorFollow.userId === req.user.id &&
