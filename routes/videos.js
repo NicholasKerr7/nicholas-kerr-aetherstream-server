@@ -432,11 +432,98 @@ const buildLikedCommentIdSetForUser = (
       .map((commentLike) => commentLike.commentId)
   );
 
+const normalizeCommentParentId = (parentId = "") =>
+  typeof parentId === "string" ? parentId.trim() : "";
+
+const normalizeStoredComments = (comments = []) =>
+  Array.isArray(comments)
+    ? comments.map((comment) => {
+        const { replies, ...rest } = comment || {};
+
+        return {
+          ...rest,
+          parentId: normalizeCommentParentId(rest.parentId),
+        };
+      })
+    : [];
+
+const findCommentById = (comments = [], commentId = "") =>
+  comments.find((comment) => comment.id === commentId);
+
+const collectDescendantCommentIds = (comments = [], parentCommentId = "") => {
+  const childCommentIdsByParentId = new Map();
+
+  comments.forEach((comment) => {
+    const parentId = normalizeCommentParentId(comment.parentId);
+
+    if (!parentId) {
+      return;
+    }
+
+    if (!childCommentIdsByParentId.has(parentId)) {
+      childCommentIdsByParentId.set(parentId, []);
+    }
+
+    childCommentIdsByParentId.get(parentId).push(comment.id);
+  });
+
+  const descendantCommentIds = [];
+  const pendingParentIds = [parentCommentId];
+
+  while (pendingParentIds.length) {
+    const activeParentId = pendingParentIds.pop();
+    const directChildCommentIds = childCommentIdsByParentId.get(activeParentId) || [];
+
+    directChildCommentIds.forEach((childCommentId) => {
+      descendantCommentIds.push(childCommentId);
+      pendingParentIds.push(childCommentId);
+    });
+  }
+
+  return descendantCommentIds;
+};
+
+const buildCommentsByParentId = (comments = []) => {
+  const commentsByParentId = new Map([["", []]]);
+  const commentIds = new Set(comments.map((comment) => comment.id));
+
+  comments.forEach((comment) => {
+    const rawParentId = normalizeCommentParentId(comment.parentId);
+    const parentId = rawParentId && commentIds.has(rawParentId) ? rawParentId : "";
+
+    if (!commentsByParentId.has(parentId)) {
+      commentsByParentId.set(parentId, []);
+    }
+
+    commentsByParentId.get(parentId).push(comment);
+  });
+
+  return commentsByParentId;
+};
+
 const serializeComment = (comment, avatarLookupByUserId, likedCommentIds) => ({
   ...comment,
   avatarUrl: resolveCommentAvatarUrl(comment, avatarLookupByUserId),
   likedByCurrentUser: Boolean(likedCommentIds?.has(comment.id)),
 });
+
+const serializeThreadedComments = (
+  comments = [],
+  avatarLookupByUserId,
+  likedCommentIds,
+  parentId = "",
+  commentsByParentId = buildCommentsByParentId(comments)
+) =>
+  (commentsByParentId.get(parentId) || []).map((comment) => ({
+    ...serializeComment(comment, avatarLookupByUserId, likedCommentIds),
+    replies: serializeThreadedComments(
+      comments,
+      avatarLookupByUserId,
+      likedCommentIds,
+      comment.id,
+      commentsByParentId
+    ),
+  }));
 
 const serializeVideoWithCommentAvatars = (
   video,
@@ -444,11 +531,11 @@ const serializeVideoWithCommentAvatars = (
   likedCommentIds
 ) => ({
   ...video,
-  comments: Array.isArray(video.comments)
-    ? video.comments.map((comment) =>
-        serializeComment(comment, avatarLookupByUserId, likedCommentIds)
-      )
-    : [],
+  comments: serializeThreadedComments(
+    normalizeStoredComments(video.comments),
+    avatarLookupByUserId,
+    likedCommentIds
+  ),
 });
 
 router.get("/", async (req, res) => {
@@ -686,6 +773,7 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
 router.post("/:videoId/comments", requireAuth, async (req, res) => {
   try {
     const commentText = req.body.comment?.trim();
+    const parentCommentId = normalizeCommentParentId(req.body.parentId);
 
     if (!commentText) {
       return res
@@ -702,6 +790,14 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "No video with that id exists" });
     }
 
+    selectedVideo.comments = normalizeStoredComments(selectedVideo.comments);
+
+    if (parentCommentId && !findCommentById(selectedVideo.comments, parentCommentId)) {
+      return res
+        .status(404)
+        .json({ message: "No parent comment with that id exists" });
+    }
+
     const newComment = {
       id: crypto.randomUUID(),
       name: req.user.name,
@@ -710,19 +806,28 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
       likes: 0,
       timestamp: Date.now(),
       userId: req.user.id,
+      parentId: parentCommentId,
     };
 
-    if (!Array.isArray(selectedVideo.comments)) {
-      selectedVideo.comments = [];
+    if (parentCommentId) {
+      selectedVideo.comments.push(newComment);
+    } else {
+      selectedVideo.comments.unshift(newComment);
     }
-
-    selectedVideo.comments.unshift(newComment);
     await writeVideos(videosData);
 
     const likedCommentIds = new Set();
+    const serializedComment = serializeComment(
+      newComment,
+      buildAvatarLookupByUserId([]),
+      likedCommentIds
+    );
+
+    serializedComment.replies = [];
+
     res
       .status(201)
-      .json(serializeComment(newComment, buildAvatarLookupByUserId([]), likedCommentIds));
+      .json(serializedComment);
   } catch (error) {
     res.status(500).json({ message: "Failed to publish comment." });
   }
@@ -744,8 +849,10 @@ router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res)
       return res.status(404).json({ message: "No video with that id exists" });
     }
 
-    const selectedComment = selectedVideo.comments?.find(
-      (comment) => comment.id === req.params.commentId
+    selectedVideo.comments = normalizeStoredComments(selectedVideo.comments);
+    const selectedComment = findCommentById(
+      selectedVideo.comments,
+      req.params.commentId
     );
 
     if (!selectedComment) {
@@ -779,7 +886,15 @@ router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res)
 
     await Promise.all([writeVideos(videosData), writeCommentLikes(commentLikesData)]);
 
-    res.json(serializeComment(selectedComment, avatarLookupByUserId, likedCommentIds));
+    const serializedComment = serializeComment(
+      selectedComment,
+      avatarLookupByUserId,
+      likedCommentIds
+    );
+
+    serializedComment.replies = [];
+
+    res.json(serializedComment);
   } catch (error) {
     res.status(500).json({ message: "Failed to like comment." });
   }
@@ -801,31 +916,52 @@ router.delete("/:videoId/comments/:commentId", requireAuth, async (req, res) => 
       return res.status(404).json({ message: "No video with that id exists" });
     }
 
-    const commentIndex = selectedVideo.comments?.findIndex(
-      (comment) => comment.id === req.params.commentId
+    selectedVideo.comments = normalizeStoredComments(selectedVideo.comments);
+    const targetComment = findCommentById(
+      selectedVideo.comments,
+      req.params.commentId
     );
 
-    if (commentIndex < 0) {
+    if (!targetComment) {
       return res.status(404).json({ message: "No comment with that id exists" });
     }
-
-    const targetComment = selectedVideo.comments[commentIndex];
 
     if (!targetComment?.userId || targetComment.userId !== req.user.id) {
       return res.status(403).json({ message: "You can only delete your own comments." });
     }
 
-    const [deletedComment] = selectedVideo.comments.splice(commentIndex, 1);
+    const descendantCommentIds = collectDescendantCommentIds(
+      selectedVideo.comments,
+      req.params.commentId
+    );
+    const deletedCommentIds = [req.params.commentId, ...descendantCommentIds];
+    const deletedCommentIdSet = new Set(deletedCommentIds);
+
+    selectedVideo.comments = selectedVideo.comments.filter(
+      (comment) => !deletedCommentIdSet.has(comment.id)
+    );
+
     const remainingCommentLikes = commentLikesData.filter(
       (commentLike) =>
         !(
           commentLike.videoId === req.params.videoId &&
-          commentLike.commentId === req.params.commentId
+          deletedCommentIdSet.has(commentLike.commentId)
         )
     );
     await Promise.all([writeVideos(videosData), writeCommentLikes(remainingCommentLikes)]);
 
-    res.json(serializeComment(deletedComment, avatarLookupByUserId, new Set()));
+    const serializedComment = serializeComment(
+      targetComment,
+      avatarLookupByUserId,
+      new Set()
+    );
+
+    serializedComment.replies = [];
+
+    res.json({
+      deletedComment: serializedComment,
+      deletedCommentIds,
+    });
   } catch (error) {
     res.status(500).json({ message: "Failed to delete comment." });
   }
