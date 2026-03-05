@@ -6,5 +6,13 @@
     "passwordHash": "$2b$10$ovyFLOOzslCwjnp//9nIeOarB4EbS3TWE1exOmaEAE/uO0QkqmbUC",
     "avatarUrl": "https://i.pravatar.cc/100?img=12",
     "createdAt": 1772568419317
+  },
+  {
+    "id": "d1b7dc11-031c-4b35-8f1c-58e60139c4c3",
+    "name": "cory",
+    "email": "adonisman81@gmail.com",
+    "passwordHash": "$2b$10$iYWtQtPSQlJLAaAsMimttuhiSIvLYEHwxDU0hDNwPVNL3y9Ob8MUm",
+    "avatarUrl": "",
+    "createdAt": 1772730385370
   }
 ]
