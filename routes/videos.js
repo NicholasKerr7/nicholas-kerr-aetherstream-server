@@ -11,12 +11,14 @@ const {
   writeCommentLikes,
   readWatchProgress,
   writeWatchProgress,
+  readCreatorFollows,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
   hasCloudinaryConfig,
   uploadVideoFileToCloudinary,
 } = require("../utils/mediaStorage");
+const { resolveVideoCreator } = require("../utils/creators");
 
 const router = express.Router();
 const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
@@ -298,16 +300,23 @@ const resolveVideoTags = (video = {}) => {
   return buildAutoTagsFromVideo(video);
 };
 
-const serializeVideoSummary = (video) => ({
-  id: video.id,
-  title: video.title,
-  channel: video.channel,
-  image: video.image,
-  description: video.description || "",
-  duration: video.duration || "0:00",
-  category: inferCategoryFromVideo(video),
-  tags: resolveVideoTags(video),
-});
+const serializeVideoSummary = (video) => {
+  const creator = resolveVideoCreator(video);
+
+  return {
+    id: video.id,
+    title: video.title,
+    channel: creator.creatorName,
+    creatorId: creator.creatorId,
+    creatorAvatarUrl: creator.creatorAvatarUrl,
+    image: video.image,
+    description: video.description || "",
+    duration: video.duration || "0:00",
+    timestamp: Number(video.timestamp) || 0,
+    category: inferCategoryFromVideo(video),
+    tags: resolveVideoTags(video),
+  };
+};
 
 const serializeWatchHistoryEntry = (watchProgressEntry = {}, video) => {
   if (!video) {
@@ -359,6 +368,14 @@ const buildWatchHistoryForUser = (watchProgressEntries, videosData, userId) => {
 
   return { history, continueWatching };
 };
+
+const buildFollowedCreatorIdSetForUser = (creatorFollowsData = [], userId = "") =>
+  new Set(
+    creatorFollowsData
+      .filter((creatorFollow) => creatorFollow.userId === userId)
+      .map((creatorFollow) => creatorFollow.creatorId)
+      .filter(Boolean)
+  );
 
 const buildAvatarLookupByUserId = (users = []) =>
   new Map(
@@ -464,6 +481,30 @@ router.get("/history", requireAuth, async (req, res) => {
   }
 });
 
+router.get("/following", requireAuth, async (req, res) => {
+  try {
+    const [videosData, creatorFollowsData] = await Promise.all([
+      readVideos(),
+      readCreatorFollows(),
+    ]);
+    const followedCreatorIds = buildFollowedCreatorIdSetForUser(
+      creatorFollowsData,
+      req.user.id
+    );
+    const followingFeed = videosData
+      .map((video) => serializeVideoSummary(video))
+      .filter((videoSummary) => followedCreatorIds.has(videoSummary.creatorId))
+      .sort((first, second) => second.timestamp - first.timestamp);
+
+    res.json({
+      videos: followingFeed,
+      followedCreatorIds: Array.from(followedCreatorIds),
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load following feed." });
+  }
+});
+
 router.get("/:videoId", async (req, res) => {
   try {
     const [videosData, usersData, commentLikesData, watchProgressEntries] =
@@ -508,7 +549,11 @@ router.get("/:videoId", async (req, res) => {
     const serializedWatchProgress = matchingWatchProgress
       ? serializeWatchHistoryEntry(matchingWatchProgress, singleVideo)
       : null;
+    const creator = resolveVideoCreator(singleVideo);
 
+    serializedVideo.channel = creator.creatorName;
+    serializedVideo.creatorId = creator.creatorId;
+    serializedVideo.creatorAvatarUrl = creator.creatorAvatarUrl;
     serializedVideo.category = inferCategoryFromVideo(singleVideo);
     serializedVideo.tags = resolveVideoTags(singleVideo);
     serializedVideo.watchProgressSeconds =
@@ -614,6 +659,8 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
       id: crypto.randomUUID(),
       title,
       channel: req.user.name,
+      creatorId: req.user.id,
+      creatorAvatarUrl: req.user.avatarUrl || "",
       image: uploadedVideo.thumbnailUrl || DEFAULT_VIDEO_IMAGE,
       description,
       category: category || inferCategoryFromVideo({ title, description }),

@@ -10,6 +10,7 @@ const videosFilePath = path.join(storageDir, "videos.json");
 const usersFilePath = path.join(storageDir, "users.json");
 const commentLikesFilePath = path.join(storageDir, "comment-likes.json");
 const watchProgressFilePath = path.join(storageDir, "watch-progress.json");
+const creatorFollowsFilePath = path.join(storageDir, "creator-follows.json");
 const seedVideosFilePath = path.resolve(__dirname, "..", "data", "videos.json");
 const seedUsersFilePath = path.resolve(__dirname, "..", "data", "users.json");
 const seedCommentLikesFilePath = path.resolve(
@@ -23,6 +24,12 @@ const seedWatchProgressFilePath = path.resolve(
   "..",
   "data",
   "watch-progress.json"
+);
+const seedCreatorFollowsFilePath = path.resolve(
+  __dirname,
+  "..",
+  "data",
+  "creator-follows.json"
 );
 
 const isSeagatePath = (targetPath) =>
@@ -57,6 +64,7 @@ const ensureStorageReady = async () => {
   await ensureSeedFile(usersFilePath, seedUsersFilePath, "[]");
   await ensureSeedFile(commentLikesFilePath, seedCommentLikesFilePath, "[]");
   await ensureSeedFile(watchProgressFilePath, seedWatchProgressFilePath, "[]");
+  await ensureSeedFile(creatorFollowsFilePath, seedCreatorFollowsFilePath, "[]");
 };
 
 const readJson = async (filePath) => {
@@ -80,6 +88,9 @@ const writeCommentLikes = async (commentLikes) =>
 const readWatchProgress = async () => readJson(watchProgressFilePath);
 const writeWatchProgress = async (watchProgressEntries) =>
   writeJson(watchProgressFilePath, watchProgressEntries);
+const readCreatorFollows = async () => readJson(creatorFollowsFilePath);
+const writeCreatorFollows = async (creatorFollows) =>
+  writeJson(creatorFollowsFilePath, creatorFollows);
 
 module.exports = {
   ensureStorageReady,
@@ -91,9 +102,12 @@ module.exports = {
   writeCommentLikes,
   readWatchProgress,
   writeWatchProgress,
+  readCreatorFollows,
+  writeCreatorFollows,
   storageDir,
   videosFilePath,
   usersFilePath,
   commentLikesFilePath,
   watchProgressFilePath,
+  creatorFollowsFilePath,
 };
