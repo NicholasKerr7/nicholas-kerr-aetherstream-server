@@ -5,6 +5,10 @@ const jwt = require("jsonwebtoken");
 
 const { readUsers, writeUsers } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
+const {
+  resolveUserNotificationPreferences,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+} = require("../utils/notificationPreferences");
 
 const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
@@ -14,6 +18,7 @@ const sanitizeUser = (user) => ({
   name: user.name,
   email: user.email,
   avatarUrl: user.avatarUrl || "",
+  notificationPreferences: resolveUserNotificationPreferences(user),
   createdAt: user.createdAt,
 });
 
@@ -56,6 +61,7 @@ router.post("/signup", async (req, res) => {
       email,
       passwordHash,
       avatarUrl,
+      notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES },
       createdAt: Date.now(),
     };
 

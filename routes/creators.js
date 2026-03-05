@@ -9,6 +9,8 @@ const {
   writeCreatorFollows,
   readWatchProgress,
   readCommentLikes,
+  readNotifications,
+  writeNotifications,
 } = require("../utils/storage");
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
@@ -16,6 +18,10 @@ const {
   parseMetric,
   resolveVideoCreator,
 } = require("../utils/creators");
+const {
+  resolveUserNotificationPreferences,
+  isNotificationEnabledForType,
+} = require("../utils/notificationPreferences");
 
 const router = express.Router();
 const MAX_CREATOR_VIDEOS = 100;
@@ -394,6 +400,50 @@ const buildCreatorAnalytics = ({
   };
 };
 
+const appendCreatorFollowNotification = (
+  notificationsData = [],
+  {
+    recipientUserId = "",
+    recipientNotificationPreferences = {},
+    actorUser = null,
+    creatorProfile = null,
+  } = {}
+) => {
+  const safeNotifications = Array.isArray(notificationsData) ? notificationsData : [];
+  const actorUserId = actorUser?.id || "";
+  const actorName = normalizeWhitespace(actorUser?.name || "") || "Someone";
+  const creatorId = normalizeWhitespace(creatorProfile?.id || "");
+
+  if (
+    !recipientUserId ||
+    !actorUserId ||
+    !creatorId ||
+    recipientUserId === actorUserId
+  ) {
+    return safeNotifications;
+  }
+
+  if (!isNotificationEnabledForType(recipientNotificationPreferences, "creator_follow")) {
+    return safeNotifications;
+  }
+
+  return [
+    ...safeNotifications,
+    {
+      id: crypto.randomUUID(),
+      userId: recipientUserId,
+      type: "creator_follow",
+      actorUserId,
+      actorName,
+      actorAvatarUrl: normalizeWhitespace(actorUser?.avatarUrl || ""),
+      creatorId,
+      message: `${actorName} started following your creator profile.`,
+      createdAt: Date.now(),
+      readAt: 0,
+    },
+  ];
+};
+
 const serializeCreatorVideo = (video) => {
   const creator = resolveVideoCreator(video);
 
@@ -601,11 +651,13 @@ router.get("/:creatorId", async (req, res) => {
 
 router.put("/:creatorId/follow", requireAuth, async (req, res) => {
   try {
-    const [videosData, usersData, creatorFollowsData] = await Promise.all([
-      readVideos(),
-      readUsers(),
-      readCreatorFollows(),
-    ]);
+    const [videosData, usersData, creatorFollowsData, notificationsData] =
+      await Promise.all([
+        readVideos(),
+        readUsers(),
+        readCreatorFollows(),
+        readNotifications(),
+      ]);
     const { creatorsById } = buildCreatorsDirectory(
       videosData,
       usersData,
@@ -654,7 +706,27 @@ router.put("/:creatorId/follow", requireAuth, async (req, res) => {
       });
     }
 
-    await writeCreatorFollows(nextCreatorFollows);
+    const didStartFollowing = requestedFollowing && !isCurrentlyFollowing;
+    const creatorNotificationPreferences = resolveUserNotificationPreferences(
+      usersData.find((user) => user.id === creatorProfile.id)
+    );
+    const nextNotifications = didStartFollowing
+      ? appendCreatorFollowNotification(notificationsData, {
+          recipientUserId: creatorProfile.id,
+          recipientNotificationPreferences: creatorNotificationPreferences,
+          actorUser: req.user,
+          creatorProfile,
+        })
+      : notificationsData;
+    const shouldWriteNotifications =
+      nextNotifications.length !== notificationsData.length;
+    const pendingWrites = [writeCreatorFollows(nextCreatorFollows)];
+
+    if (shouldWriteNotifications) {
+      pendingWrites.push(writeNotifications(nextNotifications));
+    }
+
+    await Promise.all(pendingWrites);
 
     const followersCount = nextCreatorFollows.filter(
       (creatorFollow) => creatorFollow.creatorId === req.params.creatorId

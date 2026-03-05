@@ -1,7 +1,17 @@
 const express = require("express");
 
-const { readNotifications, writeNotifications } = require("../utils/storage");
+const {
+  readNotifications,
+  writeNotifications,
+  readUsers,
+  writeUsers,
+} = require("../utils/storage");
 const { requireAuth } = require("../middleware/auth");
+const {
+  normalizeNotificationPreferences,
+  resolveUserNotificationPreferences,
+  isNotificationEnabledForType,
+} = require("../utils/notificationPreferences");
 
 const router = express.Router();
 const MAX_NOTIFICATIONS = 60;
@@ -15,6 +25,7 @@ const serializeNotification = (notification = {}) => ({
   actorAvatarUrl: notification.actorAvatarUrl || "",
   videoId: notification.videoId || "",
   videoTitle: notification.videoTitle || "",
+  creatorId: notification.creatorId || "",
   commentId: notification.commentId || "",
   commentPreview: notification.commentPreview || "",
   message: notification.message || "",
@@ -25,10 +36,18 @@ const serializeNotification = (notification = {}) => ({
 
 router.get("/", requireAuth, async (req, res) => {
   try {
-    const notificationsData = await readNotifications();
+    const [notificationsData, usersData] = await Promise.all([
+      readNotifications(),
+      readUsers(),
+    ]);
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+    const notificationPreferences = resolveUserNotificationPreferences(currentUser);
     const notificationsForUser = notificationsData
       .filter((notification) => notification.userId === req.user.id)
       .map(serializeNotification)
+      .filter((notification) =>
+        isNotificationEnabledForType(notificationPreferences, notification.type)
+      )
       .sort(
         (firstNotification, secondNotification) =>
           secondNotification.createdAt - firstNotification.createdAt
@@ -41,9 +60,52 @@ router.get("/", requireAuth, async (req, res) => {
     res.json({
       notifications: notificationsForUser,
       unreadCount,
+      preferences: notificationPreferences,
     });
   } catch (error) {
     res.status(500).json({ message: "Failed to load notifications." });
+  }
+});
+
+router.get("/preferences", requireAuth, async (req, res) => {
+  try {
+    const usersData = await readUsers();
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User profile not found." });
+    }
+
+    res.json({
+      preferences: resolveUserNotificationPreferences(currentUser),
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load notification preferences." });
+  }
+});
+
+router.put("/preferences", requireAuth, async (req, res) => {
+  try {
+    const usersData = await readUsers();
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User profile not found." });
+    }
+
+    const nextPreferences = normalizeNotificationPreferences({
+      ...resolveUserNotificationPreferences(currentUser),
+      ...req.body,
+    });
+
+    currentUser.notificationPreferences = nextPreferences;
+    await writeUsers(usersData);
+
+    res.json({
+      preferences: nextPreferences,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update notification preferences." });
   }
 });
 

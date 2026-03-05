@@ -21,6 +21,10 @@ const {
   uploadVideoFileToCloudinary,
 } = require("../utils/mediaStorage");
 const { resolveVideoCreator } = require("../utils/creators");
+const {
+  resolveUserNotificationPreferences,
+  isNotificationEnabledForType,
+} = require("../utils/notificationPreferences");
 
 const router = express.Router();
 const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
@@ -407,6 +411,12 @@ const resolveRecipientUserIdForVideo = (video = {}, usersData = []) => {
   return hasMatchingUser ? videoCreator.creatorId : "";
 };
 
+const resolveNotificationPreferencesForUser = (usersData = [], userId = "") => {
+  const matchingUser = usersData.find((user) => user.id === userId);
+
+  return resolveUserNotificationPreferences(matchingUser);
+};
+
 const buildVideoInteractionNotificationMessage = ({
   type = "video_comment",
   actorName = "Someone",
@@ -428,13 +438,25 @@ const buildVideoInteractionNotificationMessage = ({
 
 const appendVideoInteractionNotification = (
   notificationsData = [],
-  { recipientUserId = "", actorUser = null, type = "video_comment", video = null, commentId = "", commentText = "" } = {}
+  {
+    recipientUserId = "",
+    recipientNotificationPreferences = {},
+    actorUser = null,
+    type = "video_comment",
+    video = null,
+    commentId = "",
+    commentText = "",
+  } = {}
 ) => {
   const safeNotifications = Array.isArray(notificationsData) ? notificationsData : [];
   const actorUserId = actorUser?.id || "";
   const actorName = actorUser?.name?.trim() || "Someone";
 
   if (!recipientUserId || !actorUserId || recipientUserId === actorUserId || !video?.id) {
+    return safeNotifications;
+  }
+
+  if (!isNotificationEnabledForType(recipientNotificationPreferences, type)) {
     return safeNotifications;
   }
 
@@ -929,10 +951,15 @@ router.post("/:videoId/comments", requireAuth, async (req, res) => {
       selectedVideo,
       usersData
     );
+    const notificationRecipientPreferences = resolveNotificationPreferencesForUser(
+      usersData,
+      notificationRecipientUserId
+    );
     const nextNotifications = appendVideoInteractionNotification(
       notificationsData,
       {
         recipientUserId: notificationRecipientUserId,
+        recipientNotificationPreferences: notificationRecipientPreferences,
         actorUser: req.user,
         type: "video_comment",
         video: selectedVideo,
@@ -1023,10 +1050,15 @@ router.patch("/:videoId/comments/:commentId/like", requireAuth, async (req, res)
       selectedVideo,
       usersData
     );
+    const notificationRecipientPreferences = resolveNotificationPreferencesForUser(
+      usersData,
+      notificationRecipientUserId
+    );
     const nextNotifications =
       isLiking && notificationRecipientUserId
         ? appendVideoInteractionNotification(notificationsData, {
             recipientUserId: notificationRecipientUserId,
+            recipientNotificationPreferences: notificationRecipientPreferences,
             actorUser: req.user,
             type: "video_comment_like",
             video: selectedVideo,
