@@ -299,5 +299,155 @@
         "timestamp": 1632496261000
       }
     ]
+  },
+  {
+    "id": "58881364-ab43-444f-90dc-7027da7e762e",
+    "title": "Live Aurora Observatory: Iceland Night Sky 8K",
+    "channel": "Northlight Atlas",
+    "image": "https://images.unsplash.com/photo-1483347756197-71ef80e95f73?auto=format&fit=crop&w=1600&q=80",
+    "description": "A cinematic live stream from the Icelandic highlands capturing aurora movement, star fields, and weather transitions in ultra-clean 8K. Includes quiet ambient sound design for immersive viewing and travel planning.",
+    "category": "Adventure",
+    "tags": ["aurora", "iceland", "night sky", "nature", "cinematic"],
+    "views": "582,340",
+    "likes": "44,902",
+    "duration": "2:14:18",
+    "video": "https://project-2-api.herokuapp.com/stream",
+    "timestamp": 1762480800000,
+    "comments": [
+      {
+        "id": "77ad3f35-7fee-446e-a840-04c2f5a1ab03",
+        "name": "Ari Zhang",
+        "comment": "This is insanely crisp. Feels like I am standing outside in the cold with a tripod.",
+        "likes": 4,
+        "timestamp": 1762486200000
+      },
+      {
+        "id": "173cf6ff-b275-4cfd-a473-de1c6ad4f5ee",
+        "name": "Noah Griffin",
+        "comment": "Perfect stream for planning a winter trip. The weather overlays are super useful.",
+        "likes": 2,
+        "timestamp": 1762493400000
+      }
+    ]
+  },
+  {
+    "id": "3aed5250-4da8-4b6c-8a0a-13a51293912f",
+    "title": "Realtime Cyber Lab: Building a Zero-Trust Home Network",
+    "channel": "Circuit Harbor",
+    "image": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1600&q=80",
+    "description": "Hands-on stream that walks through VLAN segmentation, firewall policy design, and endpoint hardening for creators and remote teams. Practical, step-by-step, and built for real home lab setups.",
+    "category": "Technology",
+    "tags": ["cybersecurity", "networking", "homelab", "zero trust", "firewall"],
+    "views": "712,905",
+    "likes": "58,471",
+    "duration": "1:48:12",
+    "video": "https://project-2-api.herokuapp.com/stream",
+    "timestamp": 1763006400000,
+    "comments": [
+      {
+        "id": "cb2f293d-cecb-4adb-b524-861ccf60571b",
+        "name": "Lena Park",
+        "comment": "Best practical security stream I have watched this year. Clear and no fluff.",
+        "likes": 6,
+        "timestamp": 1763011800000
+      },
+      {
+        "id": "87b11115-d790-4e06-a677-f0ca58804f33",
+        "name": "Marco Ellis",
+        "comment": "The threat-model breakdown is excellent. Please do a follow-up on SIEM dashboards.",
+        "likes": 3,
+        "timestamp": 1763017200000
+      }
+    ]
+  },
+  {
+    "id": "9d3dd5fe-c46f-432a-a2cb-56d2476da9cb",
+    "title": "Deep Focus Flow: 4-Hour LoFi Rain Study Stream",
+    "channel": "Frame & Frequency",
+    "image": "https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&fit=crop&w=1600&q=80",
+    "description": "A high-fidelity productivity stream with subtle rain textures, soft lo-fi instrumentals, and chapter markers for sprint planning, deep work, and review sessions.",
+    "category": "Lifestyle",
+    "tags": ["lofi", "study", "deep work", "focus", "productivity"],
+    "views": "489,223",
+    "likes": "39,884",
+    "duration": "4:02:40",
+    "video": "https://project-2-api.herokuapp.com/stream",
+    "timestamp": 1763438400000,
+    "comments": [
+      {
+        "id": "a08b6572-a9f4-4595-ab23-fc74e81d53fc",
+        "name": "Ruben Diaz",
+        "comment": "I finished an entire sprint review deck with this on. Great pacing and sound mix.",
+        "likes": 5,
+        "timestamp": 1763445600000
+      },
+      {
+        "id": "70eecdb1-edf3-4d74-b63a-09d8572d37a8",
+        "name": "Mina Wolfe",
+        "comment": "The chapter timestamps are a smart touch. Makes Pomodoro sessions effortless.",
+        "likes": 2,
+        "timestamp": 1763451000000
+      }
+    ]
+  },
+  {
+    "id": "fdb6d378-bab9-467b-8b38-26a6e2c958e5",
+    "title": "Mobility Reset Live: 30-Min Daily Recovery Session",
+    "channel": "Pulse Method",
+    "image": "https://images.unsplash.com/photo-1518611012118-696072aa579a?auto=format&fit=crop&w=1600&q=80",
+    "description": "Guided low-impact recovery stream focused on hips, spine, and shoulder mobility. Built for athletes, desk workers, and creators needing sustainable daily wellness routines.",
+    "category": "Wellness",
+    "tags": ["mobility", "recovery", "stretching", "wellness", "daily routine"],
+    "views": "354,678",
+    "likes": "31,409",
+    "duration": "0:32:18",
+    "video": "https://project-2-api.herokuapp.com/stream",
+    "timestamp": 1764043200000,
+    "comments": [
+      {
+        "id": "490a3703-46d1-4452-84b7-b9eb0321b9d8",
+        "name": "Kelsey Monroe",
+        "comment": "Shoulders feel way better after one week of this sequence. Really well coached.",
+        "likes": 7,
+        "timestamp": 1764048600000
+      },
+      {
+        "id": "b784dfdd-e87f-4849-8af6-1d311070be4e",
+        "name": "Omar Patel",
+        "comment": "The pacing is perfect. Not rushed, still challenging, and easy to stay consistent.",
+        "likes": 4,
+        "timestamp": 1764054000000
+      }
+    ]
+  },
+  {
+    "id": "165396bb-1251-4ec8-8f6f-253fc660b5a0",
+    "title": "Enduro Line Session: Canyon Descent POV 4K",
+    "channel": "Summit Rush",
+    "image": "https://images.unsplash.com/photo-1521334884684-d80222895322?auto=format&fit=crop&w=1600&q=80",
+    "description": "High-adrenaline POV stream featuring technical enduro descents, line analysis, and rider telemetry overlays. Captured in stabilized 4K with real route commentary from pro coaches.",
+    "category": "Action Sports",
+    "tags": ["enduro", "mountain bike", "pov", "downhill", "telemetry"],
+    "views": "968,112",
+    "likes": "86,733",
+    "duration": "1:06:44",
+    "video": "https://project-2-api.herokuapp.com/stream",
+    "timestamp": 1764648000000,
+    "comments": [
+      {
+        "id": "41963653-8c53-4044-964f-31ebd06d854f",
+        "name": "Blake Ochoa",
+        "comment": "Insane line choice through section three. Telemetry overlay adds so much value.",
+        "likes": 8,
+        "timestamp": 1764655200000
+      },
+      {
+        "id": "d2a511a7-2ec5-4d37-8167-df9496639cdb",
+        "name": "Sienna Cole",
+        "comment": "Production quality is elite. Feels like a live race broadcast with coaching.",
+        "likes": 6,
+        "timestamp": 1764660600000
+      }
+    ]
   }
 ]
