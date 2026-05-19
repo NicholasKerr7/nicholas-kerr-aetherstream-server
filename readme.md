@@ -39,6 +39,10 @@ The server listens on `http://localhost:8080/` by default. The AetherStream clie
 | --- | --- |
 | `PORT` | API port. Defaults to `8080`. |
 | `STORAGE_DIR` | Directory for JSON persistence files. Defaults to the Seagate data path used by this repo. Set this to any writable local path if that drive is not mounted. |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins. Defaults to local client origins. |
+| `JSON_BODY_LIMIT` | Max JSON request body size. Defaults to `1mb`. |
+| `RATE_LIMIT_WINDOW_MS` | Rate-limit window in milliseconds. Defaults to 15 minutes. |
+| `RATE_LIMIT_MAX_REQUESTS` | Max requests per IP per window. Defaults to `300`. |
 | `JWT_SECRET` | Secret used to sign and verify auth tokens. Set a strong value outside local development. |
 | `JWT_EXPIRES_IN` | JWT lifetime. Defaults to `7d`. |
 | `MAX_VIDEO_UPLOAD_BYTES` | Max accepted video upload size. Defaults to 750 MB. |
@@ -144,9 +148,16 @@ Notifications are created for creator follows, video comments, and comment likes
 Useful checks before pushing API changes:
 
 ```bash
-npm start
+npm test
 npm audit
 npm audit --omit=dev
+npm run audit:ci
 ```
 
-There is no dedicated automated test suite yet, so route changes should be verified with the AetherStream client against `http://localhost:8080/`.
+GitHub Actions runs the API test suite, a high-severity audit gate, and dependency review for pull requests. Dependabot is configured to open grouped npm and GitHub Actions update PRs weekly.
+
+## Security Hardening
+
+The API disables `X-Powered-By`, applies Helmet security headers, restricts CORS to configured origins, limits JSON body size, rate-limits requests, validates upload MIME types, and keeps auth-only routes behind JWT middleware.
+
+For local end-to-end verification, run the API on `http://localhost:8080/` and the AetherStream client on `http://localhost:3000/`.
