@@ -336,6 +336,14 @@ const resolveSavedVideoIdsForUser = (user = {}) =>
 
 const resolveVideoLikesCount = (video = {}) => parseMetric(video.likes);
 
+const isVideoOwnedByUser = (video = {}, userId = "") => {
+  if (!userId) {
+    return false;
+  }
+
+  return resolveVideoCreator(video).creatorId === userId;
+};
+
 const serializeVideoSummary = (video) => {
   const creator = resolveVideoCreator(video);
 
@@ -511,6 +519,15 @@ const scoreTrendingVideo = (video = {}) => {
     momentumBoost * 1.6
   );
 };
+
+const serializeManagedVideo = (video) => ({
+  ...serializeVideoSummary(video),
+  views: video.views || "0",
+  likes: formatMetric(resolveVideoLikesCount(video)),
+  likesCount: resolveVideoLikesCount(video),
+  commentsCount: countStoredComments(video.comments),
+  video: video.video || "",
+});
 
 const addWeightToMap = (weightMap = new Map(), key = "", weight = 0) => {
   if (!key || !Number.isFinite(weight) || weight <= 0) {
@@ -1088,6 +1105,24 @@ router.get("/feed", async (req, res) => {
   }
 });
 
+router.get("/mine", requireAuth, async (req, res) => {
+  try {
+    const videosData = await readVideos();
+    const ownedVideos = videosData
+      .filter((video) => isVideoOwnedByUser(video, req.user.id))
+      .sort(
+        (firstVideo, secondVideo) =>
+          (Number(secondVideo.timestamp) || 0) -
+          (Number(firstVideo.timestamp) || 0)
+      )
+      .map((video) => serializeManagedVideo(video));
+
+    res.json({ videos: ownedVideos });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load your videos." });
+  }
+});
+
 router.get("/saved", requireAuth, async (req, res) => {
   try {
     const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
@@ -1106,6 +1141,119 @@ router.get("/saved", requireAuth, async (req, res) => {
     res.json({ videos: savedVideos });
   } catch (error) {
     res.status(500).json({ message: "Failed to load saved videos." });
+  }
+});
+
+router.patch("/:videoId", requireAuth, async (req, res) => {
+  try {
+    const videosData = await readVideos();
+    const selectedVideo = videosData.find((video) => video.id === req.params.videoId);
+
+    if (!selectedVideo) {
+      return res.status(404).json({ message: "No video with that id exists" });
+    }
+
+    if (!isVideoOwnedByUser(selectedVideo, req.user.id)) {
+      return res.status(403).json({ message: "You can only edit your own videos." });
+    }
+
+    const title = req.body.title?.trim();
+    const description = req.body.description?.trim();
+    const category = normalizeCategory(req.body.category);
+    const tags = normalizeTags(req.body.tags);
+
+    if (!title || !description) {
+      return res
+        .status(400)
+        .json({ message: "Please provide both a title and description." });
+    }
+
+    selectedVideo.title = title;
+    selectedVideo.description = description;
+    selectedVideo.category =
+      category || inferCategoryFromVideo({ ...selectedVideo, title, description });
+    selectedVideo.tags = tags.length
+      ? tags
+      : buildAutoTagsFromVideo({ ...selectedVideo, title, description });
+
+    await writeVideos(videosData);
+
+    res.json(serializeManagedVideo(selectedVideo));
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update video details." });
+  }
+});
+
+router.delete("/:videoId", requireAuth, async (req, res) => {
+  try {
+    const [
+      videosData,
+      usersData,
+      commentLikesData,
+      watchProgressEntries,
+      notificationsData,
+    ] = await Promise.all([
+      readVideos(),
+      readUsers(),
+      readCommentLikes(),
+      readWatchProgress(),
+      readNotifications(),
+    ]);
+    const selectedVideo = videosData.find((video) => video.id === req.params.videoId);
+
+    if (!selectedVideo) {
+      return res.status(404).json({ message: "No video with that id exists" });
+    }
+
+    if (!isVideoOwnedByUser(selectedVideo, req.user.id)) {
+      return res
+        .status(403)
+        .json({ message: "You can only delete your own videos." });
+    }
+
+    const nextVideosData = videosData.filter(
+      (video) => video.id !== selectedVideo.id
+    );
+    const nextUsersData = usersData.map((user) => {
+      const nextSavedVideoIds = resolveSavedVideoIdsForUser(user).filter(
+        (savedVideoId) => savedVideoId !== selectedVideo.id
+      );
+
+      if (!Array.isArray(user.savedVideoIds)) {
+        return user;
+      }
+
+      if (!nextSavedVideoIds.length) {
+        const { savedVideoIds, ...restUser } = user;
+        return restUser;
+      }
+
+      return {
+        ...user,
+        savedVideoIds: nextSavedVideoIds,
+      };
+    });
+    const nextCommentLikesData = commentLikesData.filter(
+      (commentLike) => commentLike.videoId !== selectedVideo.id
+    );
+    const nextWatchProgressEntries = watchProgressEntries.filter(
+      (watchProgressEntry) => watchProgressEntry.videoId !== selectedVideo.id
+    );
+    const nextNotificationsData = notificationsData.filter(
+      (notification) => notification.videoId !== selectedVideo.id
+    );
+
+    await Promise.all([
+      writeVideos(nextVideosData),
+      writeUsers(nextUsersData),
+      writeCommentLikes(nextCommentLikesData),
+      writeWatchProgress(nextWatchProgressEntries),
+      writeNotifications(nextNotificationsData),
+    ]);
+
+    res.json({ videoId: selectedVideo.id, deleted: true });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete video." });
   }
 });
 
