@@ -7,6 +7,7 @@ const {
   readVideos,
   writeVideos,
   readUsers,
+  writeUsers,
   readCommentLikes,
   writeCommentLikes,
   readWatchProgress,
@@ -309,6 +310,31 @@ const resolveVideoTags = (video = {}) => {
 
   return buildAutoTagsFromVideo(video);
 };
+
+const formatMetric = (value) =>
+  new Intl.NumberFormat("en-US").format(Math.max(0, Number(value) || 0));
+
+const normalizeIdList = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
+};
+
+const resolveVideoLikeUserIds = (video = {}) =>
+  normalizeIdList(video.likedByUserIds);
+
+const resolveSavedVideoIdsForUser = (user = {}) =>
+  normalizeIdList(user.savedVideoIds);
+
+const resolveVideoLikesCount = (video = {}) => parseMetric(video.likes);
 
 const serializeVideoSummary = (video) => {
   const creator = resolveVideoCreator(video);
@@ -1062,6 +1088,27 @@ router.get("/feed", async (req, res) => {
   }
 });
 
+router.get("/saved", requireAuth, async (req, res) => {
+  try {
+    const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User profile not found." });
+    }
+
+    const videosById = new Map(videosData.map((video) => [video.id, video]));
+    const savedVideos = resolveSavedVideoIdsForUser(currentUser)
+      .map((savedVideoId) => videosById.get(savedVideoId))
+      .filter(Boolean)
+      .map((video) => serializeVideoSummary(video));
+
+    res.json({ videos: savedVideos });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load saved videos." });
+  }
+});
+
 router.get("/:videoId", async (req, res) => {
   try {
     const [
@@ -1114,6 +1161,11 @@ router.get("/:videoId", async (req, res) => {
       ? serializeWatchHistoryEntry(matchingWatchProgress, singleVideo)
       : null;
     const creator = resolveVideoCreator(singleVideo);
+    const currentUser = requesterUserId
+      ? usersData.find((user) => user.id === requesterUserId)
+      : null;
+    const videoLikeUserIds = resolveVideoLikeUserIds(singleVideo);
+    const videoLikesCount = resolveVideoLikesCount(singleVideo);
 
     serializedVideo.channel = creator.creatorName;
     serializedVideo.creatorId = creator.creatorId;
@@ -1131,6 +1183,14 @@ router.get("/:videoId", async (req, res) => {
       : false;
     serializedVideo.category = inferCategoryFromVideo(singleVideo);
     serializedVideo.tags = resolveVideoTags(singleVideo);
+    serializedVideo.likes = formatMetric(videoLikesCount);
+    serializedVideo.likesCount = videoLikesCount;
+    serializedVideo.isLikedByCurrentUser = requesterUserId
+      ? videoLikeUserIds.includes(requesterUserId)
+      : false;
+    serializedVideo.isSavedByCurrentUser = currentUser
+      ? resolveSavedVideoIdsForUser(currentUser).includes(singleVideo.id)
+      : false;
     serializedVideo.watchProgressSeconds =
       serializedWatchProgress?.progressSeconds || 0;
     serializedVideo.watchDurationSeconds =
@@ -1142,6 +1202,93 @@ router.get("/:videoId", async (req, res) => {
     res.json(serializedVideo);
   } catch (error) {
     res.status(500).json({ message: "Failed to load video details." });
+  }
+});
+
+router.patch("/:videoId/like", requireAuth, async (req, res) => {
+  try {
+    const videosData = await readVideos();
+    const selectedVideo = videosData.find((video) => video.id === req.params.videoId);
+
+    if (!selectedVideo) {
+      return res.status(404).json({ message: "No video with that id exists" });
+    }
+
+    const currentLikeUserIds = resolveVideoLikeUserIds(selectedVideo);
+    const isCurrentlyLiked = currentLikeUserIds.includes(req.user.id);
+    const shouldLike =
+      typeof req.body.liked === "boolean" ? req.body.liked : !isCurrentlyLiked;
+    const nextLikeUserIds = shouldLike
+      ? Array.from(new Set([...currentLikeUserIds, req.user.id]))
+      : currentLikeUserIds.filter((userId) => userId !== req.user.id);
+    const likeDelta =
+      shouldLike === isCurrentlyLiked ? 0 : shouldLike ? 1 : -1;
+    const nextLikesCount = Math.max(
+      0,
+      resolveVideoLikesCount(selectedVideo) + likeDelta
+    );
+
+    if (nextLikeUserIds.length) {
+      selectedVideo.likedByUserIds = nextLikeUserIds;
+    } else {
+      delete selectedVideo.likedByUserIds;
+    }
+
+    selectedVideo.likes = formatMetric(nextLikesCount);
+    await writeVideos(videosData);
+
+    res.json({
+      videoId: selectedVideo.id,
+      liked: shouldLike,
+      likes: selectedVideo.likes,
+      likesCount: nextLikesCount,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update video like." });
+  }
+});
+
+router.patch("/:videoId/save", requireAuth, async (req, res) => {
+  try {
+    const [videosData, usersData] = await Promise.all([readVideos(), readUsers()]);
+    const selectedVideo = videosData.find((video) => video.id === req.params.videoId);
+    const currentUser = usersData.find((user) => user.id === req.user.id);
+
+    if (!selectedVideo) {
+      return res.status(404).json({ message: "No video with that id exists" });
+    }
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User profile not found." });
+    }
+
+    const currentSavedVideoIds = resolveSavedVideoIdsForUser(currentUser);
+    const isCurrentlySaved = currentSavedVideoIds.includes(selectedVideo.id);
+    const shouldSave =
+      typeof req.body.saved === "boolean" ? req.body.saved : !isCurrentlySaved;
+    const nextSavedVideoIds = shouldSave
+      ? Array.from(new Set([...currentSavedVideoIds, selectedVideo.id]))
+      : currentSavedVideoIds.filter((videoId) => videoId !== selectedVideo.id);
+
+    if (nextSavedVideoIds.length) {
+      currentUser.savedVideoIds = nextSavedVideoIds;
+    } else {
+      delete currentUser.savedVideoIds;
+    }
+
+    await writeUsers(usersData);
+
+    const savedCount = usersData.filter((user) =>
+      resolveSavedVideoIdsForUser(user).includes(selectedVideo.id)
+    ).length;
+
+    res.json({
+      videoId: selectedVideo.id,
+      saved: shouldSave,
+      savedCount,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update saved video." });
   }
 });
 
