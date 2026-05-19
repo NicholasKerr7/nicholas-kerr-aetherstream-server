@@ -3,6 +3,7 @@ const streamifier = require("streamifier");
 const { v2: cloudinary } = require("cloudinary");
 
 const DEFAULT_VIDEO_FOLDER = "aetherstream/videos";
+const DEFAULT_THUMBNAIL_FOLDER = "aetherstream/thumbnails";
 
 const hasCloudinaryConfig = () =>
   Boolean(
@@ -98,8 +99,63 @@ const uploadVideoFileToCloudinary = async (file) => {
   };
 };
 
+const uploadImageFileToCloudinary = async (file) => {
+  ensureCloudinaryConfigured();
+
+  if (!file?.buffer?.length) {
+    throw new Error("Image file payload is empty.");
+  }
+
+  const fileNameBase = sanitizePublicIdBase(
+    path.parse(file.originalname || "upload-thumbnail").name
+  );
+  const publicId = `${Date.now()}-${fileNameBase || "thumbnail"}`;
+  const uploadFolder =
+    process.env.CLOUDINARY_THUMBNAIL_FOLDER || DEFAULT_THUMBNAIL_FOLDER;
+
+  const uploadResult = await new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: uploadFolder,
+        public_id: publicId,
+        resource_type: "image",
+        overwrite: false,
+        transformation: [
+          { width: 1280, height: 720, crop: "fill", gravity: "auto" },
+          { quality: "auto" },
+        ],
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(file.buffer).pipe(uploadStream);
+  });
+  const imageUrl = cloudinary.url(uploadResult.public_id, {
+    resource_type: "image",
+    secure: true,
+    transformation: [
+      { width: 1280, height: 720, crop: "fill", gravity: "auto" },
+      { quality: "auto" },
+    ],
+  });
+
+  return {
+    imageUrl,
+    bytes: uploadResult.bytes || 0,
+    publicId: uploadResult.public_id,
+  };
+};
+
 module.exports = {
   hasCloudinaryConfig,
+  uploadImageFileToCloudinary,
   uploadVideoFileToCloudinary,
   formatDuration,
 };

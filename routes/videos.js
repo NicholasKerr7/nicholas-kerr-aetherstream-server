@@ -19,6 +19,7 @@ const {
 const { requireAuth, JWT_SECRET } = require("../middleware/auth");
 const {
   hasCloudinaryConfig,
+  uploadImageFileToCloudinary,
   uploadVideoFileToCloudinary,
 } = require("../utils/mediaStorage");
 const { parseMetric, resolveVideoCreator } = require("../utils/creators");
@@ -32,6 +33,8 @@ const DEFAULT_VIDEO_IMAGE = "https://i.imgur.com/l2Xfgpl.jpg";
 const DEFAULT_VIDEO_CATEGORY = "General";
 const MAX_VIDEO_UPLOAD_BYTES =
   Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 750 * 1024 * 1024;
+const MAX_THUMBNAIL_UPLOAD_BYTES =
+  Number(process.env.MAX_THUMBNAIL_UPLOAD_BYTES) || 10 * 1024 * 1024;
 const MAX_VIDEO_TAGS = 8;
 const MAX_FEED_ITEMS = 80;
 const DEFAULT_FEED_ITEMS = 36;
@@ -101,23 +104,34 @@ const CATEGORY_RULES = [
   },
 ];
 
-const uploadVideo = multer({
+const uploadMedia = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_VIDEO_UPLOAD_BYTES,
   },
   fileFilter: (req, file, callback) => {
-    if (file?.mimetype?.startsWith("video/")) {
+    if (file?.fieldname === "video" && file?.mimetype?.startsWith("video/")) {
       callback(null, true);
       return;
     }
 
-    callback(new Error("Only video file uploads are allowed."));
+    if (
+      file?.fieldname === "thumbnail" &&
+      file?.mimetype?.startsWith("image/")
+    ) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error("Only video uploads and image thumbnails are allowed."));
   },
 });
 
 const parseVideoUpload = (req, res, next) => {
-  uploadVideo.single("video")(req, res, (error) => {
+  uploadMedia.fields([
+    { name: "video", maxCount: 1 },
+    { name: "thumbnail", maxCount: 1 },
+  ])(req, res, (error) => {
     if (!error) {
       next();
       return;
@@ -125,9 +139,9 @@ const parseVideoUpload = (req, res, next) => {
 
     if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
       const maxUploadMb = Math.round(MAX_VIDEO_UPLOAD_BYTES / (1024 * 1024));
-      res
-        .status(413)
-        .json({ message: `Video file is too large. Max size is ${maxUploadMb}MB.` });
+      res.status(413).json({
+        message: `Upload file is too large. Max video size is ${maxUploadMb}MB.`,
+      });
       return;
     }
 
@@ -1511,8 +1525,21 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
         .json({ message: "Please provide both a title and description." });
     }
 
-    if (!req.file) {
+    const videoFile = req.files?.video?.[0];
+    const thumbnailFile = req.files?.thumbnail?.[0] || null;
+
+    if (!videoFile) {
       return res.status(400).json({ message: "Please attach a video file to publish." });
+    }
+
+    if (thumbnailFile && thumbnailFile.size > MAX_THUMBNAIL_UPLOAD_BYTES) {
+      const maxThumbnailMb = Math.round(
+        MAX_THUMBNAIL_UPLOAD_BYTES / (1024 * 1024)
+      );
+
+      return res.status(413).json({
+        message: `Thumbnail image is too large. Max size is ${maxThumbnailMb}MB.`,
+      });
     }
 
     if (!hasCloudinaryConfig()) {
@@ -1522,7 +1549,10 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
       });
     }
 
-    const uploadedVideo = await uploadVideoFileToCloudinary(req.file);
+    const uploadedVideo = await uploadVideoFileToCloudinary(videoFile);
+    const uploadedThumbnail = thumbnailFile
+      ? await uploadImageFileToCloudinary(thumbnailFile)
+      : null;
     const videosData = await readVideos();
 
     const newVideo = {
@@ -1531,7 +1561,10 @@ router.post("/", requireAuth, parseVideoUpload, async (req, res) => {
       channel: req.user.name,
       creatorId: req.user.id,
       creatorAvatarUrl: req.user.avatarUrl || "",
-      image: uploadedVideo.thumbnailUrl || DEFAULT_VIDEO_IMAGE,
+      image:
+        uploadedThumbnail?.imageUrl ||
+        uploadedVideo.thumbnailUrl ||
+        DEFAULT_VIDEO_IMAGE,
       description,
       category: category || inferCategoryFromVideo({ title, description }),
       tags: tags.length ? tags : buildAutoTagsFromVideo({ title, description }),
