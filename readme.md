@@ -1,131 +1,152 @@
-# Project 2 - BrainFlix API
+# AetherStream API
 
-## Overview
-- Storage is configured to use Seagate by default via `STORAGE_DIR`
+Express API for the AetherStream client. It powers authentication, personalized video feeds, creator profiles, creator analytics, upload publishing, watch progress, saved videos, threaded comments, notifications, and local admin demo access.
 
-## Local Storage
-- Default: `/Volumes/Seagate/Coding Projects/nicholas-kerr-aetherstream-server/data/videos.json`
-- Override with `STORAGE_DIR` in `.env`, but it must still be under `/Volumes/Seagate/`
+## Stack
 
-- The url for the API is `https://project-2-api.herokuapp.com`
-- Every "video" object will contain unique details however the video link will be the same
-- The API comes seeded with a list of videos
-  - Each seeded video will contain three default comments
-- **Note:** This API has a temporary memory. It may restart intermittently and forget all videos and comments that you have created (except for the three default comments)
+- Node.js and Express
+- JSON-file persistence through `utils/storage.js`
+- JWT authentication with `jsonwebtoken`
+- Password hashing with `bcryptjs`
+- Multipart uploads with `multer`
+- Optional Cloudinary media storage for published videos and thumbnails
+
+## Local Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Create a local `.env` from the example file:
+
+```bash
+cp .env.example .env
+```
+
+Start the API:
+
+```bash
+npm start
+```
+
+The server listens on `http://localhost:8080/` by default. The AetherStream client expects this API URL.
+
+## Environment
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | API port. Defaults to `8080`. |
+| `STORAGE_DIR` | Directory for JSON persistence files. Defaults to the Seagate data path used by this repo. Set this to any writable local path if that drive is not mounted. |
+| `JWT_SECRET` | Secret used to sign and verify auth tokens. Set a strong value outside local development. |
+| `JWT_EXPIRES_IN` | JWT lifetime. Defaults to `7d`. |
+| `MAX_VIDEO_UPLOAD_BYTES` | Max accepted video upload size. Defaults to 750 MB. |
+| `MAX_THUMBNAIL_UPLOAD_BYTES` | Max accepted thumbnail image size. Defaults to 10 MB. |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name for upload publishing. |
+| `CLOUDINARY_API_KEY` | Cloudinary API key. |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret. |
+| `CLOUDINARY_VIDEO_FOLDER` | Cloudinary folder for uploaded videos. Defaults to `aetherstream/videos`. |
+| `CLOUDINARY_THUMBNAIL_FOLDER` | Cloudinary folder for uploaded thumbnails. Defaults to `aetherstream/thumbnails`. |
+| `ADMIN_DEMO_LOGIN_ENABLED` | Set to `true` to allow `/auth/admin-login` in production. It is enabled automatically outside production. |
+| `ADMIN_DEMO_EMAIL` | Optional admin demo email override. |
+| `ADMIN_DEMO_PASSWORD` | Optional admin demo password override. |
+| `ADMIN_DEMO_NAME` | Optional admin demo display name override. |
+
+## Storage
+
+The API persists state as JSON files:
+
+- `videos.json`
+- `users.json`
+- `comment-likes.json`
+- `watch-progress.json`
+- `creator-follows.json`
+- `notifications.json`
+
+On startup, `ensureStorageReady()` creates the storage directory and seeds missing files from the repo's `data/` directory. This is intentionally lightweight for local development and demos; it is not a replacement for a production database.
 
 ## Authentication
-- To register with the API and get a key, make a GET request to `/register`
-    - You can do this with the browser and you only need to do it once. Store the key in a global variable in your website.
-- You must append `?api_key=<your_api_key_here>` to each of your API request URLs (except for `/register`)
 
-## API Errors
-- This API may return a 400 or 404 error
-#### Example error body
-```json
-{
-  "message": "No video with that id exists"
-}
+Protected routes require:
+
+```http
+Authorization: Bearer <token>
 ```
 
-## Routes
+Auth endpoints:
 
-### GET `/videos`
-- Returns an array of video objects 
-- Contains only enough information to display in side bar
-#### Response body example
-```json
-[
-    {   
-        "id": "1af0jruup5gu", 
-        "title": "BMX Rampage: 2018 Highlights", 
-        "channel": "Red Cow", 
-        "image": "https://i.imgur.com/l2Xfgpl.jpg" 
-    },
-    { 
-        "id": "1ainjruutd1j", 
-        "title": "Become A Travel Pro In One Easy Lesson", 
-        "channel": "Todd Welch", 
-        "image": "https://i.imgur.com/5qyCZrD.jpg"
-    }
-]
-```
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/auth/signup` | Create an account and return a token. |
+| `POST` | `/auth/login` | Sign in with email and password. |
+| `POST` | `/auth/admin-login` | Create or sign in as the local admin demo user. |
+| `GET` | `/auth/me` | Return the current authenticated profile. |
+| `PATCH` | `/auth/me` | Update display name or avatar URL. |
 
-### GET `/videos/:id`
-- `:id` must be swapped out with the id of a video as found in the list of videos
-- Returns a detailed object of a single video
-    -  Details include the list of comments for that video
-- Example response body
-```json
-{ 
-        "id": "1af0jruup5gu",
-        "title": "BMX Rampage: 2018 Highlights",
-        "channel": "Red Cow",
-        "image": "https://i.imgur.com/l2Xfgpl.jpg",
-        "description": "On a gusty day in Southern Utah, a group of 25 daring mountain bikers blew the doors off what is possible on two wheels, unleashing some of the biggest moments the sport has ever seen. While mother nature only allowed for one full run before the conditions made it impossible to ride, that was all that was needed for event veteran Kyle Strait, who won the event for the second time -- eight years after his first Red Cow Rampage title",
-        "views": "1,001,023",
-        "likes": "110,985",
-        "duration": "4:01",
-        "video": "https://project-2-api.herokuapp.com/stream",
-        "timestamp": 1545162149000,
-        "comments": [
-            {
-                "name": "Micheal Lyons",
-                "comment": "They BLEW the ROOF off at their last show, once everyone started figuring out they were going. This is still simply the greatest opening of concert I have EVER witnessed.",
-                "id": "1ab6d9f6-da38-456e-9b09-ab0acd9ce818",
-                "likes": 0,
-                "timestamp": 1545162149000
-            },
-            {
-                "name": "Gary Wong",
-                "comment": "Every time I see him shred I feel so motivated to get off my couch and hop on my board. He’s so talented! I wish I can ride like him one day so I can really enjoy myself!",
-                "id": "cc6f173d-9e9d-4501-918d-bc11f15a8e14",
-                "likes": 0,
-                "timestamp": 1544595784046
-            },
-            {
-                "name": "Theodore Duncan",
-                "comment": "How can someone be so good!!! You can tell he lives for this and loves to do it every day. Everytime I see him I feel instantly happy! He’s definitely my favorite ever!",
-                "id": "993f950f-df99-48e7-bd1e-d95003cc98f1",
-                "likes": 0,
-                "timestamp": 1542262984046
-            }
-        ] 
-    }
-```
+## Videos
 
-## The following endpoints are not required to satisfy the requirements of sprint 2
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/videos` | No | List video summaries. |
+| `GET` | `/videos/feed?mode=for-you&limit=36` | Optional | Return ranked feed items. Modes: `for-you`, `following`, `trending`. |
+| `GET` | `/videos/:videoId` | Optional | Return full video details, comments, creator state, like/save state, and watch progress. |
+| `GET` | `/videos/history` | Yes | Return watch history and continue-watching items. |
+| `GET` | `/videos/following` | Yes | Return videos from followed creators. |
+| `GET` | `/videos/mine` | Yes | Return videos owned by the current creator. |
+| `GET` | `/videos/saved` | Yes | Return saved videos for the current user. |
+| `POST` | `/videos` | Yes | Publish a multipart video upload with optional thumbnail. Requires Cloudinary config. |
+| `PATCH` | `/videos/:videoId` | Yes | Update title, description, category, and tags for owned videos. |
+| `DELETE` | `/videos/:videoId` | Yes | Delete an owned video and related user state. |
+| `PATCH` | `/videos/:videoId/like` | Yes | Toggle or set the current user's video like. |
+| `PATCH` | `/videos/:videoId/save` | Yes | Toggle or set saved-video state. |
+| `PUT` | `/videos/:videoId/progress` | Yes | Upsert watch progress. |
+| `POST` | `/videos/:videoId/comments` | Yes | Add a top-level comment or reply. |
+| `PATCH` | `/videos/:videoId/comments/:commentId/like` | Yes | Toggle the current user's comment like. |
+| `DELETE` | `/videos/:videoId/comments/:commentId` | Yes | Delete the current user's comment and its replies. |
 
-### POST `/videos/:id/comments`
-- `:id` must be swapped out with the numeric id of a video as found in the list of videos
-- Creates a new comment for a specific video
-- Post body example
-```
-{
-	"name": "Nigel",
-	"comment": "This is a test"
-}
-```
-- response body example
-```
-{
-  "name": "Nigel",
-  "comment": "This is a test",
-  "id": 4,
-  "timestamp": 1531857374673
-}
+Video uploads use `multipart/form-data` with:
+
+- `video`: required video file
+- `thumbnail`: optional image file
+- `title`: required
+- `description`: required
+- `category`: optional
+- `tags`: optional comma-separated tags
+
+If Cloudinary variables are missing, upload publishing returns `503` while the rest of the API remains usable.
+
+## Creators
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/creators` | Optional | List creator profiles derived from published videos. |
+| `GET` | `/creators/:creatorId` | Optional | Return one creator profile and recent uploads. |
+| `GET` | `/creators/me/analytics?windowDays=30` | Yes | Return current creator analytics and top videos. |
+| `PUT` | `/creators/:creatorId/follow` | Yes | Follow or unfollow a creator. |
+
+Creator analytics include total videos, views, likes, comments, followers, watch sessions, completed views, watch hours, average completion rate, windowed activity, and top videos.
+
+## Notifications
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/notifications` | Yes | Return recent notifications, unread count, and preferences. |
+| `GET` | `/notifications/preferences` | Yes | Return notification preferences. |
+| `PUT` | `/notifications/preferences` | Yes | Update notification preferences. |
+| `PATCH` | `/notifications/:notificationId/read` | Yes | Mark one notification as read. |
+| `PUT` | `/notifications/read-all` | Yes | Mark all current-user notifications as read. |
+
+Notifications are created for creator follows, video comments, and comment likes when the recipient's preferences allow the event type.
+
+## Maintenance
+
+Useful checks before pushing API changes:
+
+```bash
+npm start
+npm audit
+npm audit --omit=dev
 ```
 
-### DELETE `/videos/:videoId/comments/:commentId`
-- Deletes the given comment and returns it in the response body
-- `:videoId` must be swapped out with the numeric id of a video as found in the list of videos
-- `:commentId` must be swapped out with the numeric id of a comment as found in the list of comments for the given video
-- **this endpoint is not mandatory**. It is present for those interested in clearing out comments or going beyond the assignment requirements
-- Response body example
-```
-{
-    "name": "Ian",
-    "comment": "You could make $5000 a day too!",
-    "id": 1,
-    "timestamp": 1530744338878
-}
-```
+There is no dedicated automated test suite yet, so route changes should be verified with the AetherStream client against `http://localhost:8080/`.
