@@ -12,12 +12,27 @@ const {
 
 const router = express.Router();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+const ADMIN_DEMO_USER_ID =
+  process.env.ADMIN_DEMO_USER_ID || "admin-aetherstream-demo";
+const ADMIN_DEMO_NAME = process.env.ADMIN_DEMO_NAME || "AetherStream Admin";
+const ADMIN_DEMO_EMAIL = (
+  process.env.ADMIN_DEMO_EMAIL || "admin@aetherstream.local"
+)
+  .trim()
+  .toLowerCase();
+const ADMIN_DEMO_PASSWORD =
+  process.env.ADMIN_DEMO_PASSWORD || "AetherStreamAdmin!";
+
+const isAdminDemoLoginEnabled = () =>
+  process.env.ADMIN_DEMO_LOGIN_ENABLED === "true" ||
+  process.env.NODE_ENV !== "production";
 
 const sanitizeUser = (user) => ({
   id: user.id,
   name: user.name,
   email: user.email,
   avatarUrl: user.avatarUrl || "",
+  role: user.role || "creator",
   notificationPreferences: resolveUserNotificationPreferences(user),
   createdAt: user.createdAt,
 });
@@ -32,6 +47,53 @@ const signTokenForUser = (user) =>
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
+
+router.post("/admin-login", async (req, res) => {
+  try {
+    if (!isAdminDemoLoginEnabled()) {
+      return res.status(403).json({ message: "Admin demo login is disabled." });
+    }
+
+    const users = await readUsers();
+    let adminUser = users.find(
+      (user) =>
+        user.id === ADMIN_DEMO_USER_ID ||
+        user.email?.trim().toLowerCase() === ADMIN_DEMO_EMAIL
+    );
+
+    if (!adminUser) {
+      adminUser = {
+        id: ADMIN_DEMO_USER_ID,
+        name: ADMIN_DEMO_NAME,
+        email: ADMIN_DEMO_EMAIL,
+        passwordHash: await bcrypt.hash(ADMIN_DEMO_PASSWORD, 10),
+        avatarUrl: "",
+        role: "admin",
+        notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES },
+        createdAt: Date.now(),
+      };
+      users.push(adminUser);
+    } else {
+      adminUser.name = adminUser.name || ADMIN_DEMO_NAME;
+      adminUser.email = adminUser.email || ADMIN_DEMO_EMAIL;
+      adminUser.role = "admin";
+      adminUser.notificationPreferences = resolveUserNotificationPreferences(adminUser);
+
+      if (!adminUser.passwordHash) {
+        adminUser.passwordHash = await bcrypt.hash(ADMIN_DEMO_PASSWORD, 10);
+      }
+    }
+
+    await writeUsers(users);
+
+    return res.json({
+      token: signTokenForUser(adminUser),
+      user: sanitizeUser(adminUser),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to sign in as admin." });
+  }
+});
 
 router.post("/signup", async (req, res) => {
   try {
